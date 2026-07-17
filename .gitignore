@@ -1,0 +1,38 @@
+# ── Dependencies & build output ──────────────────────────────
+node_modules/
+dist/
+build/
+release/
+server/target/
+
+# ── Secrets & runtime config (never commit) ──────────────────
+.env
+*.env
+!*.env.example
+server/.env
+server/config.json
+server/config.local.json
+server/config.production.json
+server/config.proxmox.json
+
+# ── Runtime server data: real users, keys, salt, sessions ────
+server/data/
+setup-keys.txt
+
+# ── Archives / backups ───────────────────────────────────────
+*.rar
+*.zip
+*.7z
+
+# ── Logs ─────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Local & editor ───────────────────────────────────────────
+*.local
+**/*.local.json
+.claude/settings.local.json
+.DS_Store
+.vscode/
+.cursor/
+.idea/

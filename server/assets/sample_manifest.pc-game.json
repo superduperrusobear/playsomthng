@@ -1,0 +1,23 @@
+{
+  "id": "prototype-2",
+  "source": "local-scan",
+  "generatedAt": 1743648000,
+  "size": 12582912,
+  "totalBytes": 12582912,
+  "packageType": "pc-game",
+  "launchTarget": "prototype2.exe",
+  "files": [
+    {
+      "path": "prototype2.exe",
+      "size": 1048576
+    },
+    {
+      "path": "Data/sharedassets0.assets",
+      "size": 8388608
+    },
+    {
+      "path": "Audio/music.bank",
+      "size": 3145728
+    }
+  ]
+}

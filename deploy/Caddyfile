@@ -1,0 +1,22 @@
+# TLS + reverse proxy for the playsomthng server.
+#
+# You need BOTH:
+#   1) Caddy: TLS termination (this file)
+#   2) playsomthng-server bound to 127.0.0.1:3000 (systemd or tmux)
+#
+# The server owns the game files and serves them through /cdn, which is token +
+# hardware gated. Do NOT add `file_server` here — that would publish the games
+# directory with no authentication and bypass every check the server makes.
+#
+# TLS: point your domain's DNS A/AAAA at this machine. Ports 80/443 open.
+# Keep `bind` in config.json on 127.0.0.1 so nothing can reach the server
+# except through this proxy.
+
+your-domain.example {
+	encode zstd gzip
+
+	# flush_interval -1 keeps the catalog SSE stream from being buffered.
+	reverse_proxy 127.0.0.1:3000 {
+		flush_interval -1
+	}
+}

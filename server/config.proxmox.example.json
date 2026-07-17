@@ -1,0 +1,10 @@
+{
+  "bind": "127.0.0.1:3000",
+  "dataDir": "/opt/somthng-server/data",
+  "downloadBaseUrl": "https://your-domain.example",
+  "manifestsPath": "manifests",
+  "catalogCacheTtlSeconds": 120,
+  "catalogMode": "remote",
+  "localGamesRoot": null,
+  "publicBaseUrl": "https://your-domain.example"
+}

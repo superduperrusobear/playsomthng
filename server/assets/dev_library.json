@@ -1,0 +1,62 @@
+{
+  "source": "playsomthng-dev",
+  "totalGames": 3,
+  "page": 1,
+  "pageSize": 50,
+  "totalPages": 1,
+  "games": [
+    {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "title": "Test Title Alpha",
+      "slug": "test-title-alpha",
+      "description": "A fast-paced action RPG from the dev server.",
+      "coverImage": "https://example.com/cover-alpha.png",
+      "bannerImage": "https://example.com/banner-alpha.png",
+      "screenshots": [],
+      "platform": "pc",
+      "tags": ["action", "rpg"],
+      "developer": "Studio Null",
+      "publisher": "PlaySomthng Labs",
+      "releaseDate": "2025-03-15",
+      "emulator": { "required": false },
+      "sizeBytes": 42000000000,
+      "systemRequirements": {
+        "minimum": { "os": "Windows 10", "cpu": "Intel i5-8400", "gpu": "GTX 1060", "ram": "8 GB", "storage": "42 GB" },
+        "recommended": { "os": "Windows 11", "cpu": "Ryzen 5 5600X", "gpu": "RTX 3060", "ram": "16 GB", "storage": "42 GB" }
+      }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "title": "Test Title Beta",
+      "slug": "test-title-beta",
+      "description": "A cinematic PS5 adventure (mock from API).",
+      "screenshots": [],
+      "platform": "ps5",
+      "tags": ["adventure", "story"],
+      "developer": "Neon Arc",
+      "publisher": "PlaySomthng Labs",
+      "releaseDate": "2024-11-01",
+      "emulator": { "required": false },
+      "sizeBytes": 67500000000
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000003",
+      "title": "Test Title Gamma",
+      "slug": "test-title-gamma",
+      "description": "GameCube classic (Dolphin).",
+      "screenshots": [],
+      "platform": "gamecube",
+      "tags": ["adventure", "classic"],
+      "developer": "Retro Forge",
+      "publisher": "PlaySomthng Labs",
+      "releaseDate": "2003-03-24",
+      "emulator": {
+        "required": true,
+        "emulator": "dolphin",
+        "emulatorVersion": "5.0+",
+        "setupNotes": "Use ISO format."
+      },
+      "sizeBytes": 1400000000
+    }
+  ]
+}

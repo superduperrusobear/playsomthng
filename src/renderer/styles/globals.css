@@ -1,0 +1,261 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    overflow: hidden;
+    background-color: #0a0a0a;
+    color: #f4f4f8;
+    font-family: "Inter", system-ui, sans-serif;
+    user-select: none;
+  }
+
+  ::-webkit-scrollbar {
+    width: 4px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #2e2e2e;
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #444;
+  }
+}
+
+@layer components {
+  .drag-region {
+    -webkit-app-region: drag;
+  }
+
+  .no-drag {
+    -webkit-app-region: no-drag;
+  }
+
+  .glass {
+    background: rgba(22, 22, 29, 0.8);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+
+  /** Shared animated gradient — full-screen canvas behind the app shell (App.tsx). */
+  .app-bg-gradient {
+    background-color: #030303;
+    background-image:
+      radial-gradient(ellipse 130% 85% at 50% -15%, rgba(255, 255, 255, 0.1) 0%, transparent 52%),
+      radial-gradient(ellipse 90% 55% at 95% 85%, rgba(255, 255, 255, 0.055) 0%, transparent 52%),
+      radial-gradient(ellipse 55% 45% at 8% 55%, rgba(255, 255, 255, 0.04) 0%, transparent 48%),
+      linear-gradient(
+        132deg,
+        #000000 0%,
+        #1f1f1f 20%,
+        #0a0a0a 42%,
+        #353535 64%,
+        #101010 82%,
+        #1a1a1a 100%
+      );
+    background-size: 100% 100%, 100% 100%, 100% 100%, 380% 380%;
+    background-position: center center, center center, center center, 8% 42%;
+    animation: app-bg-shift 22s ease-in-out infinite;
+  }
+
+  .app-bg-layer {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /** Dark red cast when the library server is offline (App.tsx toggles). */
+  .app-bg-offline {
+    z-index: 1;
+    opacity: 0.92;
+    background:
+      radial-gradient(ellipse 125% 95% at 50% -8%, rgba(110, 12, 22, 0.55) 0%, transparent 58%),
+      radial-gradient(ellipse 90% 70% at 85% 75%, rgba(55, 0, 0, 0.22) 0%, transparent 55%),
+      radial-gradient(ellipse 70% 55% at 12% 60%, rgba(45, 0, 8, 0.2) 0%, transparent 50%),
+      linear-gradient(165deg, rgba(35, 0, 0, 0.35) 0%, rgba(8, 0, 0, 0.12) 45%, transparent 85%);
+    mix-blend-mode: multiply;
+  }
+
+  .dock-breathe {
+    animation: dock-breathe 3.2s ease-in-out infinite;
+  }
+
+  /**
+   * Game / library cards — soft “smudged” depth (tight falloff, no huge halos).
+   */
+  .card-shadow-smudge {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.06),
+      0 1px 2px rgba(0, 0, 0, 0.45),
+      0 4px 14px -4px rgba(0, 0, 0, 0.5);
+    transition: box-shadow 0.2s ease;
+  }
+
+  .card-shadow-smudge:hover {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.09),
+      0 2px 6px -2px rgba(0, 0, 0, 0.5),
+      0 8px 22px -8px rgba(0, 0, 0, 0.42);
+  }
+
+  /** Store carousel cards — tight falloff, no wide halos */
+  .card-shadow-store-selected {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.08),
+      0 0 0 1px rgba(255, 255, 255, 0.05),
+      0 4px 16px -4px rgba(0, 0, 0, 0.52);
+  }
+
+  .card-shadow-store-mid {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.05),
+      0 2px 10px -3px rgba(0, 0, 0, 0.45);
+  }
+
+  .card-shadow-store-far {
+    box-shadow: 0 1px 5px -2px rgba(0, 0, 0, 0.48);
+  }
+
+  /** Slow highlight — quiet at rest; stronger only on `.group:hover` (cards stay secondary to content) */
+  .card-glimmer {
+    pointer-events: none;
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    border-radius: inherit;
+    overflow: hidden;
+    mix-blend-mode: soft-light;
+    background: linear-gradient(
+      128deg,
+      rgba(255, 255, 255, 0) 0%,
+      rgba(255, 255, 255, 0.03) 42%,
+      rgba(255, 255, 255, 0.14) 50%,
+      rgba(255, 255, 255, 0.04) 58%,
+      rgba(255, 255, 255, 0) 100%
+    );
+    background-size: 200% 200%;
+    animation: card-glimmer-subtle 6s ease-in-out infinite;
+  }
+
+  .group:hover .card-glimmer {
+    animation: card-glimmer-strong 3.2s ease-in-out infinite;
+  }
+
+  .card-glimmer--store {
+    mix-blend-mode: overlay;
+    animation-duration: 7s;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .app-bg-gradient {
+      animation: none;
+      background-position: center center, center center, center center, 50% 50%;
+    }
+
+    .dock-breathe {
+      animation: none;
+    }
+
+    .card-glimmer,
+    .card-glimmer--store {
+      animation: none;
+      background-position: 50% 50%;
+      opacity: 0.28;
+    }
+  }
+}
+
+@keyframes app-bg-shift {
+  0%,
+  100% {
+    background-position: center center, center center, center center, 8% 42%;
+  }
+  50% {
+    background-position: center center, center center, center center, 92% 58%;
+  }
+}
+
+@keyframes dock-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.06);
+  }
+}
+
+@keyframes card-glimmer-subtle {
+  0%,
+  100% {
+    background-position: 0% 32%;
+    opacity: 0.16;
+  }
+  50% {
+    background-position: 100% 68%;
+    opacity: 0.28;
+  }
+}
+
+@keyframes card-glimmer-strong {
+  0%,
+  100% {
+    background-position: 0% 22%;
+    opacity: 0.42;
+  }
+  50% {
+    background-position: 100% 78%;
+    opacity: 0.78;
+  }
+}
+
+@layer utilities {
+  @keyframes fadeSlideIn {
+    from { opacity: 0; transform: translateY(6px) scale(0.97); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+  }
+}
+
+/* ── Card pick "pack opening" pulse ─────────────────────────────────────────
+   Applied to the carousel card on double-click: it jumps/flashes like a card
+   being pulled from a pack before the detail page builds around it.
+   --------------------------------------------------------------------------- */
+@keyframes cardPickPulse {
+  0%   { transform: scale(1.08);                   filter: brightness(1); }
+  20%  { transform: scale(1.3) rotateZ(-1deg);     filter: brightness(2.8) drop-shadow(0 0 30px rgba(255,255,255,0.55)); }
+  52%  { transform: scale(1.16) rotateZ(0.5deg);   filter: brightness(1.7); }
+  78%  { transform: scale(1.24) rotateZ(-0.4deg);  filter: brightness(2.3); }
+  100% { transform: scale(1.12);                   filter: brightness(1.4); }
+}
+
+/* ── Game detail page section enter animations ───────────────────────────── */
+@keyframes gdSlideDown {
+  from { opacity: 0; transform: translateY(-14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes gdFadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes gdSlideUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}

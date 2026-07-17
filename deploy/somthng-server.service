@@ -1,0 +1,21 @@
+[Unit]
+Description=Somthng library API (playsomthng-server)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=somthng
+Group=somthng
+WorkingDirectory=/opt/somthng-server
+Environment=CONFIG_PATH=/opt/somthng-server/config.json
+ExecStart=/opt/somthng-server/playsomthng-server
+Restart=on-failure
+RestartSec=5
+
+# Hardening (optional; adjust if you hit permission issues)
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
