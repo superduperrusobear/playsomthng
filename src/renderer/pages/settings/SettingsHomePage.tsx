@@ -9,7 +9,7 @@ import logoutIcon from "../../assets/icons/logout-svgrepo-com.svg";
 const iconClass = "h-5 w-5 shrink-0 object-contain invert opacity-75";
 
 const rowBase =
-  "flex min-h-[clamp(3.25rem,6vh,4.5rem)] w-full flex-1 items-center gap-3 px-[clamp(1rem,4vw,1.75rem)] py-2 text-left transition-colors hover:bg-black/10";
+  "flex min-h-[clamp(3rem,5.5vh,4rem)] w-full flex-1 items-center gap-3 px-[clamp(1rem,4vw,1.75rem)] py-2 text-left transition-colors hover:bg-black/10";
 
 export function SettingsHomePage() {
   const logout = useLogout();
@@ -31,13 +31,8 @@ export function SettingsHomePage() {
                 className={cn(rowBase, "text-inherit no-underline")}
               >
                 <img src={item.icon} alt="" className={iconClass} draggable={false} />
-                <div className="min-w-0 flex-1">
-                  <div className="text-[clamp(10px,1.35vmin,12px)] font-medium uppercase tracking-[0.16em] text-[#d0d0d0]">
-                    {item.label}
-                  </div>
-                  <p className="mt-0.5 text-[clamp(11px,1.2vmin,12px)] font-normal normal-case leading-snug tracking-normal text-[#7a7a7a]">
-                    {item.description}
-                  </p>
+                <div className="min-w-0 flex-1 text-[clamp(10px,1.35vmin,12px)] font-medium uppercase tracking-[0.16em] text-[#d0d0d0]">
+                  {item.label}
                 </div>
               </Link>
             ))}
@@ -52,13 +47,8 @@ export function SettingsHomePage() {
               )}
             >
               <img src={logoutIcon} alt="" className={iconClass} draggable={false} />
-              <div className="min-w-0 flex-1">
-                <div className="text-[clamp(10px,1.35vmin,12px)] font-medium uppercase tracking-[0.16em] text-[#d0d0d0]">
+              <div className="min-w-0 flex-1 text-[clamp(10px,1.35vmin,12px)] font-medium uppercase tracking-[0.16em] text-[#d0d0d0]">
                   {logout.isPending ? "Signing out…" : "Logout"}
-                </div>
-                <p className="mt-0.5 text-[clamp(11px,1.2vmin,12px)] font-normal normal-case leading-snug tracking-normal text-[#7a7a7a]">
-                  {logout.isPending ? "Please wait." : "Sign out of this session."}
-                </p>
               </div>
             </button>
           </nav>

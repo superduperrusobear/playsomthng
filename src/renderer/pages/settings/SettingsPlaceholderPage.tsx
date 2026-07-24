@@ -21,7 +21,6 @@ export function SettingsPlaceholderPage() {
                 <h1 className="text-[13px] font-medium uppercase tracking-[0.14em] text-[#d0d0d0]">
                   {meta.label}
                 </h1>
-                <p className="mt-1 text-[12px] leading-relaxed text-[#7a7a7a]">{meta.description}</p>
                 <p className="mt-4 text-[13px] leading-relaxed text-[#9a9a9a]">
                   This section is not wired up yet — you’ll configure it here soon.
                 </p>
