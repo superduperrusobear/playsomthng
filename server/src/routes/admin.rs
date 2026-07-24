@@ -4,7 +4,8 @@
 //! (see `require_admin`).
 //!
 //! Routes:
-//!   GET  /api/admin/audit                  → audit entries, newest first (?events=revocations)
+//!   GET  /api/admin/audit                  → searchable audit entries, newest first
+//!   DELETE /api/admin/audit                → clear entries and retain a clear marker
 //!   GET  /api/admin/users                  → list users, devices, pending keys
 //!   POST /api/admin/users/:id/revoke       → drop sessions + enrollments, clear key
 //!   POST /api/admin/users/:id/key          → issue a new one-time key
@@ -33,14 +34,15 @@ use crate::auth;
 use crate::catalog_meta::{CatalogMeta, list_meta_ids, load_meta_for_admin_path, save_meta};
 use crate::state::AppState;
 
-/// Returns `Ok(())` when the request carries a valid admin session token.
+/// Returns the signed-in admin's user id when the session is valid.
 /// Returns `Err(StatusCode)` to propagate as the handler error otherwise.
-async fn require_admin(headers: &HeaderMap, state: &AppState) -> Result<(), StatusCode> {
+async fn require_admin(headers: &HeaderMap, state: &AppState) -> Result<String, StatusCode> {
     let token = auth::bearer_token(headers).ok_or(StatusCode::UNAUTHORIZED)?;
     let user_id = {
         let sessions = state.auth_sessions.lock().await;
         sessions
             .get(&auth::token_key(&token))
+            .filter(|s| auth::session_device_is_valid(&state.data_dir, &state.hw_salt, s))
             .map(|s| s.user_id.clone())
             .ok_or(StatusCode::UNAUTHORIZED)?
     };
@@ -48,7 +50,7 @@ async fn require_admin(headers: &HeaderMap, state: &AppState) -> Result<(), Stat
     if role != "admin" {
         return Err(StatusCode::FORBIDDEN);
     }
-    Ok(())
+    Ok(user_id)
 }
 
 /// Username behind the admin token — the `by` field on audit entries.
@@ -58,11 +60,20 @@ async fn admin_name(state: &AppState, headers: &HeaderMap) -> String {
     };
     let user_id = {
         let sessions = state.auth_sessions.lock().await;
-        sessions.get(&auth::token_key(&token)).map(|s| s.user_id.clone())
+        sessions.get(&auth::token_key(&token))
+            .filter(|s| auth::session_device_is_valid(&state.data_dir, &state.hw_salt, s))
+            .map(|s| s.user_id.clone())
     };
     user_id
         .and_then(|id| auth::username_for_id(&state.data_dir, &id))
         .unwrap_or_else(|| "unknown".into())
+}
+
+fn reject_self_target(admin_id: &str, target_user_id: &str) -> Result<(), StatusCode> {
+    if admin_id == target_user_id {
+        return Err(StatusCode::CONFLICT);
+    }
+    Ok(())
 }
 
 // ── Audit ─────────────────────────────────────────────────────────────────────
@@ -72,6 +83,8 @@ pub struct AuditQuery {
     /// Comma-separated event names, or "revocations" for every revoke type.
     pub events: Option<String>,
     pub limit: Option<usize>,
+    pub user: Option<String>,
+    pub search: Option<String>,
 }
 
 const REVOCATION_EVENTS: [&str; 3] = ["user_revoked", "device_revoked", "key_revoked"];
@@ -84,17 +97,55 @@ pub async fn get_audit(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     require_admin(&headers, &state).await?;
     let limit = q.limit.unwrap_or(200).min(1000);
-
     let filter = q.events.unwrap_or_default();
+    let user = q.user.unwrap_or_default().trim().to_lowercase();
+    let search = q.search.unwrap_or_default().trim().to_lowercase();
     let entries = match filter.trim() {
-        "" => crate::audit::read(&state.data_dir, None, limit),
-        "revocations" => crate::audit::read(&state.data_dir, Some(&REVOCATION_EVENTS), limit),
+        "" => crate::audit::read(&state.data_dir, None, 1000),
+        "revocations" => crate::audit::read(&state.data_dir, Some(&REVOCATION_EVENTS), 1000),
         list => {
             let names: Vec<&str> = list.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
-            crate::audit::read(&state.data_dir, Some(&names), limit)
+            crate::audit::read(&state.data_dir, Some(&names), 1000)
         }
     };
+    let entries = entries
+        .into_iter()
+        .filter(|entry| {
+            if !user.is_empty() {
+                let entry_user = entry
+                    .get("user")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_lowercase();
+                if !entry_user.contains(&user) {
+                    return false;
+                }
+            }
+            search.is_empty() || entry.to_string().to_lowercase().contains(&search)
+        })
+        .take(limit)
+        .collect::<Vec<_>>();
     Ok(Json(json!({ "entries": entries })))
+}
+
+/// DELETE /api/admin/audit — clears the trail and records who cleared it.
+pub async fn clear_audit(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    require_admin(&headers, &state).await?;
+    let removed = crate::audit::clear(&state.data_dir)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    crate::audit::log(
+        &state.data_dir,
+        "audit_cleared",
+        json!({
+            "removed": removed,
+            "by": admin_name(&state, &headers).await,
+            "ip": crate::audit::client_ip(&headers),
+        }),
+    );
+    Ok(Json(json!({ "ok": true, "removed": removed })))
 }
 
 // ── Users ─────────────────────────────────────────────────────────────────────
@@ -116,7 +167,8 @@ pub async fn revoke_user(
     headers: HeaderMap,
     Path(user_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    require_admin(&headers, &state).await?;
+    let admin_id = require_admin(&headers, &state).await?;
+    reject_self_target(&admin_id, &user_id)?;
     let _guard = state.auth_mutex.lock().await;
 
     if !auth::user_exists(&state.data_dir, &user_id) {
@@ -184,7 +236,8 @@ pub async fn delete_user(
     headers: HeaderMap,
     Path(user_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    require_admin(&headers, &state).await?;
+    let admin_id = require_admin(&headers, &state).await?;
+    reject_self_target(&admin_id, &user_id)?;
     let _guard = state.auth_mutex.lock().await;
 
     let name = auth::username_for_id(&state.data_dir, &user_id).unwrap_or_else(|| user_id.clone());
@@ -220,7 +273,8 @@ pub async fn revoke_device(
     headers: HeaderMap,
     Path((user_id, hw_hash)): Path<(String, String)>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    require_admin(&headers, &state).await?;
+    let admin_id = require_admin(&headers, &state).await?;
+    reject_self_target(&admin_id, &user_id)?;
     let _guard = state.auth_mutex.lock().await;
 
     let removed = auth::revoke_device(&state.data_dir, &state.hw_salt, &user_id, &hw_hash)
@@ -494,4 +548,15 @@ pub async fn get_admin_manifest(
         .header(header::CONTENT_TYPE, "application/json; charset=utf-8")
         .body(Body::from(bytes))
         .unwrap())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn current_admin_cannot_target_self() {
+        assert_eq!(reject_self_target("admin-1", "admin-1"), Err(StatusCode::CONFLICT));
+        assert_eq!(reject_self_target("admin-1", "user-2"), Ok(()));
+    }
 }

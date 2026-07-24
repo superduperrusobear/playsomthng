@@ -37,7 +37,14 @@ function loadExisting(): crypto.KeyObject | null {
       return crypto.createPrivateKey(pem);
     }
     if (fs.existsSync(plain)) {
-      return crypto.createPrivateKey(fs.readFileSync(plain, "utf8"));
+      if (!safeStorage.isEncryptionAvailable()) {
+        throw new Error("Secure OS storage is unavailable; refusing to load a plaintext device key");
+      }
+      const privateKey = crypto.createPrivateKey(fs.readFileSync(plain, "utf8"));
+      persist(privateKey);
+      fs.unlinkSync(plain);
+      logger.info("[DEVICE_KEY] Migrated plaintext device key into OS-encrypted storage");
+      return privateKey;
     }
   } catch (err) {
     logger.warn(`[DEVICE_KEY] Could not load existing key, generating new: ${String(err)}`);
@@ -48,17 +55,18 @@ function loadExisting(): crypto.KeyObject | null {
 function persist(privateKey: crypto.KeyObject): void {
   const pem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
   fs.mkdirSync(keyDir(), { recursive: true });
-  if (safeStorage.isEncryptionAvailable()) {
-    fs.writeFileSync(path.join(keyDir(), KEY_FILE), safeStorage.encryptString(pem));
-  } else {
-    // No OS keystore (e.g. bare Linux without a keyring) — best effort on disk.
-    logger.warn("[DEVICE_KEY] OS encryption unavailable; storing key with file permissions only");
-    fs.writeFileSync(path.join(keyDir(), KEY_FILE_PLAIN), pem, { mode: 0o600 });
+  if (!safeStorage.isEncryptionAvailable()) {
+    // Credentials never fall back to readable files.
+    throw new Error("Secure OS storage is required to save this machine's private key");
   }
+  fs.writeFileSync(path.join(keyDir(), KEY_FILE), safeStorage.encryptString(pem));
 }
 
 export function getDeviceKey(): { privateKey: crypto.KeyObject; publicKeyB64: string } {
   if (cached) return cached;
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error("Secure OS storage is required for machine authentication");
+  }
   let privateKey = loadExisting();
   if (!privateKey) {
     privateKey = crypto.generateKeyPairSync("ed25519").privateKey;

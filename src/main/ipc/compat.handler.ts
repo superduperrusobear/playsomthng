@@ -1,5 +1,5 @@
 import type { IpcMain } from "electron";
-import { IpcChannel } from "../../shared/schemas";
+import { IpcChannel, IpcRequestSchema } from "../../shared/schemas";
 import { fetchProtonDbSummary, listProtonVersions, runWinetricksVerb } from "../services/compat.service";
 
 export function registerCompatHandlers(ipcMain: IpcMain): void {
@@ -8,12 +8,14 @@ export function registerCompatHandlers(ipcMain: IpcMain): void {
     return { versions };
   });
 
-  ipcMain.handle(IpcChannel.COMPAT_PROTONDB_GET, async (_e, raw: { appId: string }) => {
-    const r = await fetchProtonDbSummary(raw.appId);
+  ipcMain.handle(IpcChannel.COMPAT_PROTONDB_GET, async (_e, raw: unknown) => {
+    const { appId } = IpcRequestSchema[IpcChannel.COMPAT_PROTONDB_GET].parse(raw);
+    const r = await fetchProtonDbSummary(appId);
     return { tier: r.tier, raw: r.raw };
   });
 
-  ipcMain.handle(IpcChannel.COMPAT_WINETRICKS_RUN, async (event, raw: { verb: string }) => {
-    return runWinetricksVerb(raw.verb, event.sender);
+  ipcMain.handle(IpcChannel.COMPAT_WINETRICKS_RUN, async (event, raw: unknown) => {
+    const { verb } = IpcRequestSchema[IpcChannel.COMPAT_WINETRICKS_RUN].parse(raw);
+    return runWinetricksVerb(verb, event.sender);
   });
 }

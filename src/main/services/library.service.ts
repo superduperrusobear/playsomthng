@@ -137,8 +137,6 @@ export class LibraryService {
 
     const key = url.toString();
     const headers: Record<string, string> = { "Content-Type": "application/json", ...sessionHeaders() };
-    if (source.apiKey && !headers["Authorization"]) headers["Authorization"] = `Bearer ${source.apiKey}`;
-
     if (cachedResponse && cacheKey === key && !catalogStaleFromPush && booted) {
       return cachedResponse;
     }

@@ -7,6 +7,7 @@ import { ErrorBoundary } from "./components/errors/ErrorBoundary";
 import "./styles/globals.css";
 import { gameQueryDefaults } from "./lib/gameQueryCache";
 import { IpcChannel } from "@shared/schemas";
+import { useStoreUpdateStore } from "./store/storeUpdate.store";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -20,6 +21,7 @@ const queryClient = new QueryClient({
 queryClient.setQueryDefaults(["game"], gameQueryDefaults);
 
 window.api.on(IpcChannel.LIBRARY_CATALOG_REVISION, () => {
+  useStoreUpdateStore.getState().markUpdate();
   void queryClient.invalidateQueries({ queryKey: ["library"], refetchType: "all" });
   void queryClient.invalidateQueries({ queryKey: ["game"], refetchType: "all" });
 });

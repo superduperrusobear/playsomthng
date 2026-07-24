@@ -28,7 +28,7 @@ const PLATFORM_ICON_MAP: Partial<Record<Platform, string>> = {
 };
 
 const PLATFORM_LABEL: Record<Platform, string> = {
-  pc: "PC",
+  pc: "Windows",
   ps1: "PS1",
   ps2: "PS2",
   ps3: "PS3",

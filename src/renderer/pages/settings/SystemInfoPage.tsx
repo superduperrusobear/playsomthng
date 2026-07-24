@@ -1,47 +1,26 @@
-import { useMemo } from "react";
+import { SettingsSection, SettingsSurface } from "../../components/layout/SettingsPanel";
 import { useSysinfo } from "../../hooks/useSysinfo";
 import { formatBytes } from "../../lib/formatBytes";
-import { SettingsSection, SettingsSurface } from "../../components/layout/SettingsPanel";
-import { prepareStorageVolumes, StorageVolumesList } from "../../components/settings/StorageVolumesList";
 import { SettingsBackLink } from "./SettingsBackLink";
-import { settingsMetaForPath } from "./settingsNav";
+
+type DiskInfo = {
+  fs?: string;
+  type?: string;
+  mount?: string;
+  size?: number;
+  available?: number;
+  used?: number;
+};
 
 type SysinfoPayload = {
-  cpu?: {
-    manufacturer?: string;
-    brand?: string;
-    physicalCores?: number;
-    cores?: number;
-    speedMax?: number;
-    speed?: number;
-  };
-  memory?: {
-    total?: number;
-    free?: number;
-    used?: number;
-    active?: number;
-  };
-  disks?: Array<{
-    fs?: string;
-    type?: string;
-    mount?: string;
-    size?: number;
-    available?: number;
-    used?: number;
-    use?: number;
-  }>;
-  gpu?: Array<{
-    model?: string;
-    vendor?: string;
-    vram?: number | null;
-    vramDynamic?: boolean;
-  }>;
+  cpu?: { brand?: string; physicalCores?: number; cores?: number };
+  memory?: { total?: number; free?: number; used?: number; active?: number };
+  disks?: DiskInfo[];
+  gpu?: Array<{ model?: string; vram?: number | null }>;
   displays?: Array<{
     width?: number;
     height?: number;
-    scaleFactor?: number;
     refreshRate?: number | null;
-    rotation?: number;
     primary?: boolean;
   }>;
   os?: {
@@ -50,67 +29,55 @@ type SysinfoPayload = {
     release?: string;
     arch?: string;
     hostname?: string;
-    kernel?: string;
   };
-  machine?: {
-    manufacturer?: string;
-    model?: string;
-    version?: string;
-    virtual?: boolean;
-    serial?: string | null;
-    uuid?: string | null;
-  } | null;
-  /** Normalized machine IDs (SMBIOS / OS); see electron/sysinfo.js */
-  deviceIdentity?: {
-    systemUuid?: string | null;
-    systemSerial?: string | null;
-    baseboardSerial?: string | null;
-    motherboardManufacturer?: string | null;
-    motherboardModel?: string | null;
-    windowsMachineGuid?: string | null;
-    hardwareUuid?: string | null;
-  };
-  battery?: {
-    hasBattery?: boolean;
-    percent?: number;
-    isCharging?: boolean;
-    acConnected?: boolean;
-  };
-  time?: {
-    uptime?: number;
-    timezone?: string;
-  } | null;
-  collectedAt?: number;
+  machine?: { manufacturer?: string; model?: string; virtual?: boolean } | null;
+  battery?: { hasBattery?: boolean; percent?: number; isCharging?: boolean };
+  time?: { uptime?: number } | null;
 };
 
-function BlockTitle({ children }: { children: string }) {
-  return (
-    <h2 className="mb-3 text-[10px] font-medium uppercase tracking-[0.22em] text-[#9a9a9a]">
-      {children}
-    </h2>
-  );
+function humanUptime(seconds?: number): string {
+  if (seconds == null || seconds <= 0) return "Unavailable";
+  const days = Math.floor(seconds / 86_400);
+  const hours = Math.floor((seconds % 86_400) / 3_600);
+  if (days > 0) return `${days}d ${hours}h`;
+  const minutes = Math.floor((seconds % 3_600) / 60);
+  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
 }
 
-function Row({ label, value }: { label: string; value: string }) {
+function usagePercent(used?: number, total?: number): number | null {
+  if (used == null || total == null || total <= 0) return null;
+  return Math.max(0, Math.min(100, Math.round((used / total) * 100)));
+}
+
+function driveName(disk: DiskInfo, index: number): string {
+  const mount = disk.mount?.replace(/[/\\]+$/, "").trim();
+  const windowsDrive = mount?.match(/^([A-Za-z]):$/);
+  if (windowsDrive) return `Drive ${windowsDrive[1].toUpperCase()}:`;
+  return mount || disk.fs || `Storage ${index + 1}`;
+}
+
+function Metric({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: string;
+  detail?: string;
+}) {
   return (
-    <div className="grid grid-cols-[minmax(0,140px)_1fr] gap-x-4 gap-y-1 text-[13px] leading-snug">
-      <span className="text-[#8a8a8a]">{label}</span>
-      <span className="text-[#e8e8e8]">{value}</span>
+    <div className="min-w-0 py-2">
+      <dt className="text-[9px] font-semibold uppercase tracking-[0.16em] text-[#565656]">{label}</dt>
+      <dd className="mt-2 truncate text-[13px] font-medium text-white/85" title={value}>
+        {value}
+      </dd>
+      {detail && <p className="mt-1 truncate text-[10px] text-[#656565]">{detail}</p>}
     </div>
   );
 }
 
-const subBlockClass =
-  "space-y-2 border-t border-[#2c2c2c]/90 pt-3 first:border-t-0 first:pt-0";
-
 export function SystemInfoPage() {
   const { data, isLoading, isError } = useSysinfo();
-
-  /** Must run every render — do not place after loading/error early returns (hooks rule). */
-  const { disks } = useMemo(
-    () => prepareStorageVolumes((data as SysinfoPayload | undefined)?.disks ?? []),
-    [data],
-  );
 
   if (isLoading) {
     return (
@@ -118,7 +85,7 @@ export function SystemInfoPage() {
         <SettingsBackLink />
         <SettingsSurface>
           <SettingsSection>
-            <p className="text-[13px] text-[#a0a0a0]">Loading…</p>
+            <p className="text-[11px] text-[#666]">Reading this PC…</p>
           </SettingsSection>
         </SettingsSurface>
       </div>
@@ -131,177 +98,191 @@ export function SystemInfoPage() {
         <SettingsBackLink />
         <SettingsSurface>
           <SettingsSection>
-            <p className="text-[13px] text-[#b0b0b0]">Couldn’t load system info.</p>
+            <p className="text-[11px] text-[#a97777]">Could not read system information.</p>
           </SettingsSection>
         </SettingsSurface>
       </div>
     );
   }
 
-  const s = data as SysinfoPayload;
-  const os = s.os;
-  const cpu = s.cpu;
-  const mem = s.memory;
-  const machine = s.machine;
-  const bat = s.battery;
+  const system = data as SysinfoPayload;
+  const osName =
+    [system.os?.distro || system.os?.platform, system.os?.release].filter(Boolean).join(" ") ||
+    "Unknown operating system";
+  const machineName =
+    [system.machine?.manufacturer, system.machine?.model].filter(Boolean).join(" ") ||
+    system.os?.hostname ||
+    "This PC";
+  const memoryUsed = system.memory?.used ?? system.memory?.active;
+  const memoryPercent = usagePercent(memoryUsed, system.memory?.total);
+  const gpu = system.gpu?.find((item) => item.model) ?? system.gpu?.[0];
+  const coreDetail =
+    system.cpu?.physicalCores != null && system.cpu?.cores != null
+      ? `${system.cpu.physicalCores} physical · ${system.cpu.cores} logical cores`
+      : undefined;
 
-  const osName = [os?.distro || os?.platform, os?.release].filter(Boolean).join(" ") || "—";
-  const pageMeta = settingsMetaForPath("/settings/system");
+  const seenDrives = new Set<string>();
+  const drives = (system.disks ?? []).filter((disk) => {
+    if (typeof disk.size !== "number" || disk.size <= 0) return false;
+    const key = `${disk.mount ?? disk.fs ?? ""}:${disk.size}`;
+    if (seenDrives.has(key)) return false;
+    seenDrives.add(key);
+    return true;
+  });
+  drives.sort((a, b) => {
+    const aMount = a.mount ?? "";
+    const bMount = b.mount ?? "";
+    const aMain = /^C:/i.test(aMount) ? 0 : 1;
+    const bMain = /^C:/i.test(bMount) ? 0 : 1;
+    return aMain - bMain || aMount.localeCompare(bMount);
+  });
+  const totalStorage = drives.reduce((sum, disk) => sum + (disk.size ?? 0), 0);
+  const freeStorage = drives.reduce((sum, disk) => sum + (disk.available ?? 0), 0);
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
       <SettingsBackLink />
-
       <SettingsSurface className="pb-10">
-        {pageMeta && (
-          <SettingsSection>
-            <div className="flex gap-3">
-              <img
-                src={pageMeta.icon}
-                alt=""
-                className="h-6 w-6 shrink-0 object-contain invert opacity-75"
-                draggable={false}
-              />
-              <div className="min-w-0">
-                <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-[#b0b0b0]">
-                  {pageMeta.label}
-                </p>
-                <p className="mt-1 text-[12px] leading-relaxed text-[#7a7a7a]">{pageMeta.description}</p>
+        <SettingsSection className="py-8">
+          <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
+            <div className="min-w-0">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#667b68]">System</p>
+              <h1 className="mt-2 truncate font-title text-[clamp(1.7rem,4vw,2.6rem)] uppercase tracking-[0.08em] text-white/95">
+                {machineName}
+              </h1>
+              <p className="mt-2 text-[11px] text-[#666]">
+                {osName} {system.os?.arch ? `· ${system.os.arch}` : ""}
+              </p>
+            </div>
+            <div className="shrink-0 sm:text-right">
+              <p className="text-[8px] uppercase tracking-[0.15em] text-[#4f4f4f]">Uptime</p>
+              <p className="mt-1 text-[11px] text-[#888]">{humanUptime(system.time?.uptime)}</p>
+            </div>
+          </div>
+        </SettingsSection>
+
+        <SettingsSection className="py-7">
+          <h2 className="font-title text-[13px] uppercase tracking-[0.16em] text-white/80">
+            Hardware at a glance
+          </h2>
+          <dl className="mt-5 grid gap-x-10 gap-y-3 sm:grid-cols-2 xl:grid-cols-4">
+            <Metric label="Processor" value={system.cpu?.brand || "Not reported"} detail={coreDetail} />
+            <Metric
+              label="Memory"
+              value={system.memory?.total ? formatBytes(system.memory.total) : "Not reported"}
+              detail={memoryPercent != null ? `${memoryPercent}% in use` : undefined}
+            />
+            <Metric
+              label="Graphics"
+              value={gpu?.model || "Not reported"}
+              detail={gpu?.vram ? `${gpu.vram} MB VRAM` : undefined}
+            />
+            <Metric
+              label="Total storage"
+              value={totalStorage > 0 ? formatBytes(totalStorage) : "Not reported"}
+              detail={totalStorage > 0 ? `${formatBytes(freeStorage)} free` : undefined}
+            />
+          </dl>
+        </SettingsSection>
+
+        <SettingsSection className="py-7">
+          <div className="flex items-baseline justify-between gap-4">
+            <h2 className="font-title text-[13px] uppercase tracking-[0.16em] text-white/80">Storage</h2>
+            <span className="text-[9px] text-[#555]">
+              {drives.length} {drives.length === 1 ? "drive" : "drives"}
+            </span>
+          </div>
+
+          {drives.length === 0 ? (
+            <p className="mt-5 text-[11px] text-[#666]">No storage reported.</p>
+          ) : (
+            <div className="mt-4">
+              {drives.map((disk, index) => {
+                const total = disk.size ?? 0;
+                const free = disk.available ?? 0;
+                const used = Math.max(0, disk.used ?? total - free);
+                const usedPercent = usagePercent(used, total) ?? 0;
+                return (
+                  <div
+                    key={`${disk.mount ?? disk.fs ?? index}-${index}`}
+                    className="border-b border-white/[0.055] py-5 last:border-b-0"
+                  >
+                    <div className="flex items-baseline justify-between gap-5">
+                      <div className="min-w-0">
+                        <p className="truncate font-title text-[15px] tracking-[0.06em] text-[#c9c9c9]">
+                          {driveName(disk, index)}
+                        </p>
+                        <p className="mt-1 text-[9px] uppercase tracking-[0.1em] text-[#505050]">
+                          {disk.type || disk.fs || "Local storage"}
+                        </p>
+                      </div>
+                      <p className="shrink-0 text-right text-[10px] tabular-nums text-[#777]">
+                        <span className="text-[#aaa]">{formatBytes(free)}</span> free of {formatBytes(total)}
+                      </p>
+                    </div>
+                    <div className="mt-4 h-[2px] bg-white/[0.055]">
+                      <div
+                        className="h-full bg-[#718d74]"
+                        style={{ width: `${usedPercent}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </SettingsSection>
+
+        <SettingsSection className="py-7">
+          <div className="grid gap-10 lg:grid-cols-2">
+            <div>
+              <h2 className="font-title text-[12px] uppercase tracking-[0.16em] text-white/75">Displays</h2>
+              <div className="mt-4">
+                {!system.displays?.length ? (
+                  <p className="text-[11px] text-[#666]">No display details.</p>
+                ) : (
+                  system.displays.map((display, index) => (
+                    <div
+                      key={index}
+                      className="flex items-baseline justify-between gap-4 border-b border-white/[0.05] py-3 last:border-b-0"
+                    >
+                      <span className="text-[11px] text-[#aaa]">
+                        {display.width ?? "?"} × {display.height ?? "?"}
+                      </span>
+                      <span className="text-[9px] text-[#5e5e5e]">
+                        {display.refreshRate ? `${display.refreshRate} Hz` : "Unknown refresh"}
+                        {display.primary ? " · Primary" : ""}
+                      </span>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
-          </SettingsSection>
-        )}
 
-        <SettingsSection>
-          <BlockTitle>Operating system</BlockTitle>
-          <div className="space-y-2">
-            <Row label="Name" value={osName} />
-            {os?.arch != null && os.arch !== "" && <Row label="Architecture" value={os.arch} />}
-          </div>
-        </SettingsSection>
-
-        <SettingsSection>
-          <BlockTitle>Device identifiers</BlockTitle>
-          <p className="mb-3 text-[11px] leading-relaxed text-[#5a5a5a]">
-            Hardware and OS-level IDs from SMBIOS / WMI (Windows) or DMI (Linux). Useful for anonymous device
-            recognition — not your Microsoft account. Some OEMs hide motherboard serials;{" "}
-            <span className="text-[#7a7a7a]">hardwareUuid</span> /{" "}
-            <span className="text-[#7a7a7a]">windowsMachineGuid</span> are usually still present on Windows.
-          </p>
-          <div className="space-y-2">
-            {(() => {
-              const d = s.deviceIdentity;
-              if (!d) {
-                return <p className="text-[13px] text-[#a8a8a8]">No device identity block.</p>;
-              }
-              const rows: { label: string; value: string | null | undefined }[] = [
-                { label: "Hardware UUID (SMBIOS / system product)", value: d.hardwareUuid ?? undefined },
-                { label: "System UUID (DMI)", value: d.systemUuid ?? undefined },
-                { label: "System serial", value: d.systemSerial ?? undefined },
-                { label: "Motherboard serial", value: d.baseboardSerial ?? undefined },
-                { label: "Motherboard", value: [d.motherboardManufacturer, d.motherboardModel].filter(Boolean).join(" ") || undefined },
-                { label: "Windows MachineGuid (registry)", value: d.windowsMachineGuid ?? undefined },
-              ].filter((r) => r.value != null && String(r.value).trim() !== "");
-              if (rows.length === 0) {
-                return <p className="text-[13px] text-[#a8a8a8]">No IDs reported (permissions or OEM placeholders).</p>;
-              }
-              return rows.map((r) => <Row key={r.label} label={r.label} value={String(r.value)} />);
-            })()}
-          </div>
-        </SettingsSection>
-
-        <SettingsSection>
-          <BlockTitle>CPU</BlockTitle>
-          <div className="space-y-2">
-            {cpu?.brand != null && cpu.brand !== "" && <Row label="Model" value={cpu.brand} />}
-            {typeof cpu?.physicalCores === "number" && typeof cpu?.cores === "number" && (
-              <Row label="Cores" value={`${cpu.physicalCores} physical · ${cpu.cores} logical`} />
-            )}
-          </div>
-        </SettingsSection>
-
-        <SettingsSection>
-          <BlockTitle>Memory</BlockTitle>
-          <div className="space-y-2">
-            {typeof mem?.total === "number" && (
-              <Row label="Installed" value={formatBytes(mem.total)} />
-            )}
-          </div>
-        </SettingsSection>
-
-        <SettingsSection>
-          <BlockTitle>System</BlockTitle>
-          <div className="space-y-2">
-            {machine == null ? (
-              <p className="text-[13px] text-[#a8a8a8]">No system board info.</p>
-            ) : (
-              <>
-                {machine.manufacturer != null && machine.manufacturer !== "" && (
-                  <Row label="Manufacturer" value={machine.manufacturer} />
-                )}
-                {machine.model != null && machine.model !== "" && <Row label="Model" value={machine.model} />}
-              </>
-            )}
-          </div>
-        </SettingsSection>
-
-        <SettingsSection>
-          <BlockTitle>Graphics</BlockTitle>
-          {!s.gpu?.length ? (
-            <p className="text-[13px] text-[#a8a8a8]">No GPU data reported.</p>
-          ) : (
-            <ul className="space-y-0">
-              {s.gpu.map((g, i) => (
-                <li key={i} className={subBlockClass}>
-                  {g.model != null && g.model !== "" && <Row label="GPU" value={g.model} />}
-                  {typeof g.vram === "number" && g.vram > 0 && (
-                    <Row label="VRAM" value={`${g.vram} MB`} />
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
-        </SettingsSection>
-
-        <SettingsSection>
-          <BlockTitle>Storage volumes</BlockTitle>
-          {disks.length === 0 ? (
-            <p className="text-[13px] text-[#a8a8a8]">No drives reported.</p>
-          ) : (
-            <StorageVolumesList disks={disks} highlightPreferred={false} showSectionHeading={false} />
-          )}
-        </SettingsSection>
-
-        <SettingsSection>
-          <BlockTitle>Displays</BlockTitle>
-          {!s.displays?.length ? (
-            <p className="text-[13px] text-[#a8a8a8]">No display data.</p>
-          ) : (
-            <ul className="space-y-0">
-              {s.displays.map((d, i) => (
-                <li key={i} className={subBlockClass}>
-                  <Row label="Resolution" value={`${d.width ?? "?"} × ${d.height ?? "?"}`} />
-                  {d.refreshRate != null && d.refreshRate > 0 && (
-                    <Row label="Refresh" value={`${d.refreshRate} Hz`} />
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
-        </SettingsSection>
-
-        <SettingsSection>
-          <BlockTitle>Power</BlockTitle>
-          {!bat?.hasBattery ? (
-            <p className="text-[13px] text-[#a8a8a8]">No battery (desktop or unknown).</p>
-          ) : (
-            <div className="space-y-2">
-              {typeof bat.percent === "number" && <Row label="Charge" value={`${bat.percent}%`} />}
-              {typeof bat.isCharging === "boolean" && (
-                <Row label="Charging" value={bat.isCharging ? "Yes" : "No"} />
-              )}
+            <div>
+              <h2 className="font-title text-[12px] uppercase tracking-[0.16em] text-white/75">
+                Platform
+              </h2>
+              <dl className="mt-4">
+                <div className="flex items-baseline justify-between gap-4 border-b border-white/[0.05] py-3">
+                  <dt className="text-[10px] text-[#666]">Computer</dt>
+                  <dd className="text-[10px] text-[#aaa]">
+                    {system.machine?.virtual ? "Virtual machine" : "Physical computer"}
+                  </dd>
+                </div>
+                <div className="flex items-baseline justify-between gap-4 py-3">
+                  <dt className="text-[10px] text-[#666]">Power</dt>
+                  <dd className="text-[10px] text-[#aaa]">
+                    {system.battery?.hasBattery
+                      ? `${Math.round(system.battery.percent ?? 0)}%${
+                          system.battery.isCharging ? " · Charging" : ""
+                        }`
+                      : "AC powered"}
+                  </dd>
+                </div>
+              </dl>
             </div>
-          )}
+          </div>
         </SettingsSection>
       </SettingsSurface>
     </div>

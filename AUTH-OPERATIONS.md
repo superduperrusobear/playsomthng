@@ -1,84 +1,75 @@
-# Somthng — auth operations & troubleshooting
+# Somthng — authentication operations
 
-This app uses **file-based auth** on the library server. There is no web admin panel; you edit JSON on disk (or deploy scripts that do the same).
+Somthng uses server-owned accounts plus per-machine Ed25519 keys. The Electron app keeps the private device key and session token in the operating system's encrypted credential storage. Production servers must be reached through HTTPS; plain HTTP is accepted only on loopback for local development.
 
-## What lives where (under the server `dataDir`)
+## Server auth data
 
-| File | Purpose |
-|------|---------|
-| `auth/auth-users.json` | Accounts: `id` (UUID), `username`, `setupKey`, `role` (`user` or `admin`) |
-| `auth/hardware-bindings.json` | Which PCs (`hardwareUuid`) are allowed per `user id` |
-| *(in memory)* | Active **session tokens** after login — not persisted |
+Runtime auth state lives under the configured server `dataDir` and must not be committed:
 
-Paths are relative to whatever directory the server uses as **`dataDir`** (see server config / env).
+| File | Contents |
+|---|---|
+| `auth/auth-users.json` | Account IDs, usernames, roles, blocked state, account creation time, and Argon2id setup-code verifiers |
+| `auth/hardware-bindings.json` | Salted machine fingerprints, hostnames, public device keys, recognition time, last-seen time, and last-download time |
+| `auth/active-sessions.json` | SHA-256 hashes of session tokens and their account/device bindings |
+| `auth/hw-salt` | Server-local salt used to pseudonymize SMBIOS identifiers |
+| `audit.jsonl` | Security and administrative events; never setup codes, session tokens, private keys, or raw SMBIOS UUIDs |
 
----
+Readable setup codes are never stored by the server. A newly issued code is returned once to the administrator, while only its Argon2id verifier is written as `setupKeyHash`.
 
-## Setup keys (non-admin users)
+## Bootstrap the first administrator
 
-### One-time enrollment keys
+Run this on the server:
 
-For **`role: "user"`**:
+```bash
+playsomthng-server create-user --username your-name --admin
+```
 
-1. You put a **20-character hex** key in `setupKey` (e.g. `openssl rand -hex 10`).
-2. The user signs in **once** on a **new** machine with username + that key. The server **binds** that PC and then **clears** `setupKey` in `auth-users.json` for that user.
-3. **That PC** can sign in later **without** a key (hardware is already bound).
-4. A **second PC** cannot use the old key — it was cleared. You must set a **new** `setupKey` in their row, they enroll again, and the key clears again.
+The command prints a one-time 20-character enrollment code. Sign in once on the administrator's machine. That machine is then recognized, the code verifier is consumed, and later sign-ins use a short-lived server challenge signed by the machine's private key.
 
-**Admins** (`role: "admin"`): they **always** use username + setup key on every login. Keys are **not** auto-cleared for admins.
+Admins no longer re-enter setup codes on recognized machines.
 
-### Add a new user
+## Manage users and machines
 
-1. Generate a key: `openssl rand -hex 10` → 20 hex chars.
-2. Add a new object to the `users` array in `auth/auth-users.json`:
-   - `id`: new random UUID (stable forever).
-   - `username`: login name (matching is case-insensitive).
-   - `setupKey`: the 20 hex chars.
-   - `role`: `"user"` or `"admin"`.
-3. Save the file. No server restart required for the next login attempt to see it.
+Use **Settings → Admin → Users**:
 
-### Let someone use another computer
+- Create a user or administrator and copy the one-time invite shown once.
+- Expand an account to see recognized machines, recognition time, last successful sign-in, and last download request.
+- Revoke one machine without affecting the user's other machines.
+- Revoke an account to block access and remove all recognized machines.
+- Delete an account permanently.
+- Issue or cancel a pending invite for another machine.
+- The signed-in administrator cannot revoke/delete their own account or revoke their own machine records.
 
-1. Open `auth/auth-users.json`, find their user row.
-2. Set `setupKey` to a **new** value (`openssl rand -hex 10`).
-3. They sign in **once** on the new machine with that key; the key is then cleared and the new PC is bound.
+Issuing a new invite does not revoke existing machines. Use the machine-level revoke action for that.
 
-### Remove a user (revoke access)
+## Audit log
 
-1. **Delete** their entire object from the `users` array in `auth/auth-users.json`, **or** remove the `username` row and rely on ID cleanup in step 2.
-2. In `auth/hardware-bindings.json`, under `byUserId`, **remove** the entry whose key equals their **`id`** (UUID), or delete their hardware UUIDs from the array.
-3. Optional: delete their avatar files under `auth/avatars/` if you care about disk (`<userId>.*`).
+Use **Settings → Admin → Logs** to filter by event category or search across user, game, machine, IP address, actor, and denial reason. Each row expands to show every recorded field.
 
-**Important:** Anyone who already has a **valid session token** may keep using downloads until that token is gone. **Restart the server** to wipe in-memory sessions if you need an immediate cut-off.
+**Clear logs** truncates the current audit file. The server immediately records an `audit_cleared` marker with the administrator, IP address, and number of removed entries.
 
----
+## Security properties
 
-## Limitations (know these before you ship)
-
-- **No per-request “user still exists” check** against `auth-users.json` for every download — validation is mainly **bearer token → session map**. Removing a user blocks **new** logins; old tokens die on **restart** (or when the client loses its session).
-- **Hardware ID** comes from SMBIOS on the client. Bad OEM placeholders (“To be filled by O.E.M.”) may prevent binding; see troubleshooting.
-- **Ops are manual** — adding users, rotating keys, and editing bindings is **your** process (SSH, config management, or a small internal tool). The repo does not ship a hosted admin API for accounts.
-
----
+- Setup codes are one-time and stored only as Argon2id verifiers.
+- Session tokens are high-entropy opaque values; only their SHA-256 hashes are persisted server-side.
+- The client stores sessions and private device keys only with Electron `safeStorage`; it does not create plaintext fallbacks.
+- Raw SMBIOS UUIDs are never persisted or returned by the admin API.
+- Device public keys stay server-side and are not included in admin responses.
+- Every role, including administrators, is bound to a revocable machine key.
+- Download starts require a fresh, replay-protected device signature.
+- Remote server URLs must use HTTPS. Caddy should terminate TLS while the Rust server remains bound to `127.0.0.1`.
+- Cross-origin browser access is disabled by default; the Electron main process owns authenticated API calls.
 
 ## Troubleshooting
 
-| Symptom | Likely cause | What to do |
-|--------|----------------|------------|
-| `UNKNOWN_USERNAME` on login | Typo or user not in `auth-users.json` | Fix username or add the row |
-| `SETUP_KEY_REQUIRED` | Non-admin, new PC, and `setupKey` is empty or probe step | Set a fresh `setupKey` in JSON for that user |
-| `Invalid username or setup key` | Wrong key, or admin without correct key | Verify key; admins need the key every time |
-| “This PC did not report a hardware UUID…” | SMBIOS unusable / spoofed / VM | Fix SMBIOS or test on physical hardware; see `scripts/dump-sysinfo.cjs` |
-| User removed but still downloads | Old bearer token still in server memory | **Restart** the server |
-| Second PC can’t enroll | Expected after first enrollment — key was cleared | Issue a **new** `setupKey` in JSON |
-| JSON error on server start | Invalid JSON in `auth-users.json` | Validate JSON; restore from backup |
+| Symptom | Meaning | Action |
+|---|---|---|
+| `UNKNOWN_USERNAME` | Account does not exist | Check the username or create the account in Admin |
+| `SETUP_KEY_REQUIRED` | This machine is not recognized | Issue a new invite and enroll the machine once |
+| `BAD_SIGNATURE` | The local private key no longer matches the enrollment | Revoke the old machine record, issue a new invite, and enroll again |
+| `ACCOUNT_REVOKED` | The account is blocked or deleted | Restore access by issuing an invite, or create a replacement account |
+| Missing hardware UUID | SMBIOS returned an unusable placeholder | Fix the VM/firmware UUID or test on supported hardware |
+| Secure OS storage error | DPAPI, Keychain, or the Linux secret service is unavailable | Enable the OS credential store; Somthng will not save credentials in plaintext |
+| Remote HTTP rejected | Credentials would travel without transport encryption | Put the API behind HTTPS and use its public HTTPS URL |
 
----
-
-## Quick glossary
-
-- **`dataDir`**: Server root for catalog + `auth/` files.
-- **Enrollment / binding**: First successful login on a new machine (non-admin) with a valid setup key; stores `hardwareUuid` under that user’s id.
-- **One-time key**: Non-admin `setupKey` cleared from disk after it successfully enrolls **one** new machine (not consumed on repeat logins on the **same** enrolled machine).
-
-For development defaults, see `server/seed/auth-users.json` and `setup-keys.txt` in the repo (rotate keys before any production use).
+For deployment, keep the Rust listener private and use the TLS reverse proxy in `deploy/Caddyfile`.

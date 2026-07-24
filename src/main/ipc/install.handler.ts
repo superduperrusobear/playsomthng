@@ -1,6 +1,6 @@
 import path from "node:path";
 import { IpcMain } from "electron";
-import { IpcChannel, InstallOptionsSchema, ManifestJsonSchema } from "../../shared/schemas";
+import { IpcChannel, InstallOptionsSchema, ManifestJsonSchema, IpcRequestSchema } from "../../shared/schemas";
 import { SettingsService } from "../services/settings.service";
 import { getEnabledLibraryBaseUrl } from "../services/library-base-url";
 import { ensureSystemInfoCollected } from "../services/sysinfo.service";
@@ -28,6 +28,7 @@ import {
   clearCompletedSessions,
   assertNoConcurrentLibraryDownload,
 } from "../services/install.service";
+import { loadLocalLibraryFile } from "../services/local-library-file.service";
 
 export function registerInstallHandlers(ipcMain: IpcMain) {
   // ── Drive info ───────────────────────────────────────────────────────────
@@ -35,8 +36,9 @@ export function registerInstallHandlers(ipcMain: IpcMain) {
     return listDrives();
   });
 
-  ipcMain.handle(IpcChannel.DISK_SPACE_FOR_GAME, async (_e, raw: { mount: string; requiredBytes: number }) => {
-    return checkDiskSpaceForGame(raw.mount, raw.requiredBytes);
+  ipcMain.handle(IpcChannel.DISK_SPACE_FOR_GAME, async (_e, raw: unknown) => {
+    const { mount, requiredBytes } = IpcRequestSchema[IpcChannel.DISK_SPACE_FOR_GAME].parse(raw);
+    return checkDiskSpaceForGame(mount, requiredBytes);
   });
 
   // ── Preferred install mount ───────────────────────────────────────────────
@@ -45,9 +47,10 @@ export function registerInstallHandlers(ipcMain: IpcMain) {
     return { mount };
   });
 
-  ipcMain.handle(IpcChannel.INSTALL_PREF_SET, async (_e, raw: { mount: string }) => {
-    await setInstallPref(raw.mount);
-    return { mount: raw.mount };
+  ipcMain.handle(IpcChannel.INSTALL_PREF_SET, async (_e, raw: unknown) => {
+    const { mount } = IpcRequestSchema[IpcChannel.INSTALL_PREF_SET].parse(raw);
+    await setInstallPref(mount);
+    return { mount };
   });
 
   // ── Install lifecycle ─────────────────────────────────────────────────────
@@ -67,6 +70,16 @@ export function registerInstallHandlers(ipcMain: IpcMain) {
       manifestUrl = resolveAgainstBase(opts.manifestUrl, baseUrl);
       downloadBaseUrl = resolveAgainstBase(opts.downloadBaseUrl, baseUrl);
       title = opts.gameTitle;
+      // Defense in depth: renderer-supplied URLs must resolve to the configured
+      // library origin. Reject arbitrary external hosts so a compromised renderer
+      // cannot point installs at attacker-controlled servers (which would bypass
+      // library download auth and write arbitrary files into the install root).
+      if (!isUrlOnLibraryOrigin(manifestUrl, baseUrl)) {
+        throw new Error("Manifest URL must be served by your configured library server.");
+      }
+      if (!isUrlOnLibraryOrigin(downloadBaseUrl, baseUrl)) {
+        throw new Error("Download URL must be served by your configured library server.");
+      }
     } else {
       const gameRes = await _fetchLibraryGame(opts.gameId, baseUrl);
       if (!gameRes) {
@@ -109,21 +122,25 @@ export function registerInstallHandlers(ipcMain: IpcMain) {
     return startInstall(opts, manifest, title, downloadBaseUrl);
   });
 
-  ipcMain.handle(IpcChannel.INSTALL_PAUSE, async (_e, raw: { gameId: string }) => {
-    return pauseInstall(raw.gameId);
+  ipcMain.handle(IpcChannel.INSTALL_PAUSE, async (_e, raw: unknown) => {
+    const { gameId } = IpcRequestSchema[IpcChannel.INSTALL_PAUSE].parse(raw);
+    return pauseInstall(gameId);
   });
 
-  ipcMain.handle(IpcChannel.INSTALL_RESUME, async (_e, raw: { gameId: string }) => {
-    return resumeInstall(raw.gameId);
+  ipcMain.handle(IpcChannel.INSTALL_RESUME, async (_e, raw: unknown) => {
+    const { gameId } = IpcRequestSchema[IpcChannel.INSTALL_RESUME].parse(raw);
+    return resumeInstall(gameId);
   });
 
-  ipcMain.handle(IpcChannel.INSTALL_CANCEL, async (_e, raw: { gameId: string }) => {
-    await cancelInstall(raw.gameId);
+  ipcMain.handle(IpcChannel.INSTALL_CANCEL, async (_e, raw: unknown) => {
+    const { gameId } = IpcRequestSchema[IpcChannel.INSTALL_CANCEL].parse(raw);
+    await cancelInstall(gameId);
     return { ok: true };
   });
 
-  ipcMain.handle(IpcChannel.INSTALL_GET, async (_e, raw: { gameId: string }) => {
-    return readSession(raw.gameId);
+  ipcMain.handle(IpcChannel.INSTALL_GET, async (_e, raw: unknown) => {
+    const { gameId } = IpcRequestSchema[IpcChannel.INSTALL_GET].parse(raw);
+    return readSession(gameId);
   });
 
   ipcMain.handle(IpcChannel.INSTALL_LIST, async () => {
@@ -134,59 +151,100 @@ export function registerInstallHandlers(ipcMain: IpcMain) {
     return clearCompletedSessions();
   });
 
-  ipcMain.handle(IpcChannel.INSTALL_VERIFY, async (_e, raw: { gameId: string }) => {
-    return verifyInstall(raw.gameId);
+  ipcMain.handle(IpcChannel.INSTALL_VERIFY, async (_e, raw: unknown) => {
+    const { gameId } = IpcRequestSchema[IpcChannel.INSTALL_VERIFY].parse(raw);
+    return verifyInstall(gameId);
   });
 
-  ipcMain.handle(IpcChannel.INSTALL_OPEN_FOLDER, async (_e, raw: { gameId: string }) => {
-    return openInstallFolder(raw.gameId);
+  ipcMain.handle(IpcChannel.INSTALL_OPEN_FOLDER, async (_e, raw: unknown) => {
+    const { gameId } = IpcRequestSchema[IpcChannel.INSTALL_OPEN_FOLDER].parse(raw);
+    return openInstallFolder(gameId);
   });
 
-  ipcMain.handle(IpcChannel.INSTALL_LAUNCH_CANDIDATES_LIST, async (_e, raw: { installPath: string }) => {
-    return listLaunchCandidatesInInstallRoot(raw.installPath);
+  ipcMain.handle(IpcChannel.INSTALL_LAUNCH_CANDIDATES_LIST, async (_e, raw: unknown) => {
+    const { installPath } = IpcRequestSchema[IpcChannel.INSTALL_LAUNCH_CANDIDATES_LIST].parse(raw);
+    return listLaunchCandidatesInInstallRoot(installPath);
   });
 
-  ipcMain.handle(IpcChannel.LAUNCH_OVERRIDE_SET, async (_e, raw: { gameId: string; launchTarget: string | null }) => {
-    return setLaunchOverride(raw.gameId, raw.launchTarget);
+  ipcMain.handle(IpcChannel.LAUNCH_OVERRIDE_SET, async (_e, raw: unknown) => {
+    const { gameId, launchTarget } = IpcRequestSchema[IpcChannel.LAUNCH_OVERRIDE_SET].parse(raw);
+    return setLaunchOverride(gameId, launchTarget);
   });
 
   // ── Launch ────────────────────────────────────────────────────────────────
   // installPath and launchTarget are resolved by the renderer (from local-library + catalog-meta).
-  // This handler just joins them into a full exe path and spawns it.
-  ipcMain.handle(
-    IpcChannel.GAME_LAUNCH,
-    async (
-      _e,
-      raw:
-        | { gameId: string; installPath: string; launchTarget: string }
-        | { gameId: string; absoluteExePath: string },
-    ) => {
-      if ("absoluteExePath" in raw) {
-        return launchGame(raw.absoluteExePath, raw.gameId);
-      }
-      const base = path.basename(raw.installPath);
-      const segments = raw.launchTarget
-        .replace(/\\/g, "/")
-        .split("/")
-        .filter(Boolean);
-      const segs =
-        segments.length > 0 && segments[0].toLowerCase() === base.toLowerCase()
-          ? segments.slice(1)
-          : segments;
+  // This handler validates the payload and confines the resolved exe under the
+  // recorded install directory before spawning.
+  ipcMain.handle(IpcChannel.GAME_LAUNCH, async (_e, raw: unknown) => {
+    const payload = IpcRequestSchema[IpcChannel.GAME_LAUNCH].parse(raw);
 
-      const execPath = path.join(raw.installPath, ...segs);
-      return launchGame(execPath, raw.gameId);
-    },
-  );
+    if ("absoluteExePath" in payload) {
+      const recordedInstallPath = await resolveRecordedInstallPath(payload.gameId);
+      if (!recordedInstallPath) {
+        return {
+          ok: false,
+          error: "This game is not installed on this device.",
+        };
+      }
+      const resolved = path.resolve(payload.absoluteExePath);
+      if (!isPathInside(resolved, recordedInstallPath)) {
+        return {
+          ok: false,
+          error: "Launch target is outside the installed game folder.",
+        };
+      }
+      return launchGame(resolved, payload.gameId);
+    }
+
+    if (!isSafeRelativeLaunchTarget(payload.launchTarget)) {
+      return {
+        ok: false,
+        error: "Launch target is not allowed (must be relative to the install folder).",
+      };
+    }
+
+    const recordedInstallPath = await resolveRecordedInstallPath(payload.gameId);
+    // Prefer the on-disk record if we have one — otherwise trust the renderer payload,
+    // but only accept it if it agrees with the record.
+    const requestedRoot = path.resolve(payload.installPath);
+    if (recordedInstallPath && !arePathsEqual(recordedInstallPath, requestedRoot)) {
+      return {
+        ok: false,
+        error: "Install path does not match the installed location for this game.",
+      };
+    }
+    const installRoot = recordedInstallPath ?? requestedRoot;
+
+    const base = path.basename(installRoot);
+    const segments = payload.launchTarget
+      .replace(/\\/g, "/")
+      .split("/")
+      .filter(Boolean);
+    const segs =
+      segments.length > 0 && segments[0].toLowerCase() === base.toLowerCase()
+        ? segments.slice(1)
+        : segments;
+
+    const execPath = path.resolve(installRoot, ...segs);
+    if (!isPathInside(execPath, installRoot)) {
+      return {
+        ok: false,
+        error: "Launch target escapes the install folder.",
+      };
+    }
+    return launchGame(execPath, payload.gameId);
+  });
 
   // ── Stop ─────────────────────────────────────────────────────────────────────
-  ipcMain.handle(IpcChannel.GAME_STOP, async (_e, raw: { gameId: string }) => {
-    return stopGame(raw.gameId);
+  ipcMain.handle(IpcChannel.GAME_STOP, async (_e, raw: unknown) => {
+    const { gameId } = IpcRequestSchema[IpcChannel.GAME_STOP].parse(raw);
+    return stopGame(gameId);
   });
 
   // ── Uninstall ─────────────────────────────────────────────────────────────
-  ipcMain.handle(IpcChannel.GAME_UNINSTALL, async (_e, raw: { gameId: string }) => {
-    return uninstallGame(raw.gameId);
+  ipcMain.handle(IpcChannel.GAME_UNINSTALL, async (_e, raw: unknown) => {
+    const { gameId } = IpcRequestSchema[IpcChannel.GAME_UNINSTALL].parse(raw);
+    return uninstallGame(gameId);
   });
 }
 
@@ -208,8 +266,6 @@ async function _fetchLibraryGame(gameId: string, baseUrl: string): Promise<GameR
       Accept: "application/json",
       "Content-Type": "application/json",
     };
-    if (source.apiKey) headers["Authorization"] = `Bearer ${source.apiKey}`;
-
     const res = await debugFetch(url.toString(), { headers, timeoutMs: 15000 });
     if (!res.ok) return null;
 
@@ -264,6 +320,18 @@ function normalizeManifestOrigin(u: string): string {
   }
 }
 
+/**
+ * True if `url` is on the same origin as the configured library base.
+ * When no library base is configured (empty), no renderer-supplied URL is
+ * trusted — the caller must fall back to a server-resolved lookup instead.
+ */
+function isUrlOnLibraryOrigin(url: string, baseUrl: string): boolean {
+  if (!baseUrl) return false;
+  const urlOrigin = normalizeManifestOrigin(url);
+  const baseOrigin = normalizeManifestOrigin(baseUrl);
+  return !!urlOrigin && urlOrigin === baseOrigin;
+}
+
 /** Relative paths resolve against the library source base (same as renderer). */
 function resolveAgainstBase(pathOrUrl: string, baseUrl: string): string {
   const t = pathOrUrl.trim();
@@ -271,5 +339,57 @@ function resolveAgainstBase(pathOrUrl: string, baseUrl: string): string {
     return new URL(t, baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`).href;
   } catch {
     return t;
+  }
+}
+
+// ── Launch path safety helpers ────────────────────────────────────────────────
+
+/** Case-insensitive on Windows/macOS, case-sensitive elsewhere. */
+function normalizeForCompare(p: string): string {
+  const resolved = path.resolve(p);
+  return process.platform === "win32" || process.platform === "darwin"
+    ? resolved.toLowerCase()
+    : resolved;
+}
+
+function arePathsEqual(a: string, b: string): boolean {
+  return normalizeForCompare(a) === normalizeForCompare(b);
+}
+
+/** True if `child` is the same as `parent` or a descendant of it. */
+function isPathInside(child: string, parent: string): boolean {
+  const normChild = normalizeForCompare(child);
+  const normParent = normalizeForCompare(parent);
+  if (normChild === normParent) return true;
+  const withSep = normParent.endsWith(path.sep) ? normParent : normParent + path.sep;
+  return normChild.startsWith(withSep);
+}
+
+/** Reject `..`, absolute paths, drive letters, and empty targets. */
+function isSafeRelativeLaunchTarget(target: string): boolean {
+  if (typeof target !== "string") return false;
+  const trimmed = target.trim();
+  if (!trimmed) return false;
+  // Absolute (Unix) or UNC (Windows).
+  if (trimmed.startsWith("/") || trimmed.startsWith("\\\\")) return false;
+  // Windows drive letter, e.g. "C:\..."
+  if (/^[A-Za-z]:[\\/]/.test(trimmed)) return false;
+  const segments = trimmed.replace(/\\/g, "/").split("/").filter(Boolean);
+  if (segments.length === 0) return false;
+  if (segments.some((s) => s === "..")) return false;
+  return true;
+}
+
+/** Read the recorded install path for `gameId` from the local library file. */
+async function resolveRecordedInstallPath(gameId: string): Promise<string | null> {
+  try {
+    const lib = await loadLocalLibraryFile();
+    const entry = lib.games.find((g) => g.gameId === gameId);
+    if (entry?.installed && entry.installPath) {
+      return path.resolve(entry.installPath);
+    }
+    return null;
+  } catch {
+    return null;
   }
 }

@@ -8,15 +8,17 @@ mod config;
 mod download_governor;
 mod igdb;
 mod manifest;
+mod rate_limit;
 mod routes;
 mod state;
 
 use axum::{
     Router,
+    middleware::from_fn_with_state,
     routing::{delete, get, post},
 };
 use clap::{Parser, Subcommand};
-use tower_http::{cors::CorsLayer, normalize_path::NormalizePathLayer, trace::TraceLayer};
+use tower_http::{limit::RequestBodyLimitLayer, normalize_path::NormalizePathLayer, trace::TraceLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 use std::collections::HashMap;
@@ -106,7 +108,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "playsomthng_server=debug,tower_http=debug".into()),
+                .unwrap_or_else(|_| "playsomthng_server=info,tower_http=info".into()),
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
@@ -140,10 +142,16 @@ async fn main() -> anyhow::Result<()> {
     let catalog_rev_init = crate::catalog_revision::load_revision_from_disk(&data_dir);
     let (catalog_revision_tx, _) = tokio::sync::broadcast::channel::<u64>(32);
 
-    let active_sessions = crate::auth::load_active_sessions(&data_dir);
-    tracing::info!("loaded {} active sessions from disk", active_sessions.len());
-
     let hw_salt = crate::auth::load_or_create_salt(&data_dir)?;
+    let mut active_sessions = crate::auth::load_active_sessions(&data_dir);
+    let loaded_session_count = active_sessions.len();
+    active_sessions.retain(|_, session| {
+        crate::auth::session_device_is_valid(&data_dir, &hw_salt, session)
+    });
+    if active_sessions.len() != loaded_session_count {
+        crate::auth::save_active_sessions(&data_dir, &active_sessions);
+    }
+    tracing::info!("loaded {} valid active sessions from disk", active_sessions.len());
 
     let state = AppState {
         config: cfg,
@@ -161,6 +169,8 @@ async fn main() -> anyhow::Result<()> {
         download_nonces: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         audit_recent: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         download_governor: Arc::new(DownloadGovernor::new()),
+        auth_rate_limiter: crate::rate_limit::RateLimiter::new(20, 2.0),
+        sse_connections: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         started_at: std::time::Instant::now(),
     };
 
@@ -188,12 +198,13 @@ async fn main() -> anyhow::Result<()> {
             "/api/catalog/stream",
             get(routes::catalog_revision::catalog_revision_stream),
         )
+        // Auth routes — rate-limited per client IP to blunt brute-force / enumeration.
         .route("/api/auth/challenge", post(routes::auth::post_challenge))
         .route("/api/auth/login", post(routes::auth::post_login))
-        .route("/api/auth/avatar", post(routes::auth::post_avatar))
-        .route("/api/auth/devices", get(routes::auth::get_devices))
-        .route("/api/auth/avatars/{user_id}", get(routes::auth::get_avatar))
-        // Admin endpoints
+        .route("/api/auth/security", get(routes::auth::get_security))
+        .route("/api/auth/devices/{hw_hash}", delete(routes::auth::delete_device))
+        .route("/api/auth/sessions/{session_id}", delete(routes::auth::delete_session))
+        // Admin endpoints — rate-limited per client IP + a request body size cap.
         .route("/api/admin/games", get(routes::games::list_all_games))
         .route(
             "/api/admin/catalog-meta",
@@ -212,7 +223,10 @@ async fn main() -> anyhow::Result<()> {
             "/api/admin/igdb/game/{igdb_id}",
             get(routes::admin::igdb_fetch_game),
         )
-        .route("/api/admin/audit", get(routes::admin::get_audit))
+        .route(
+            "/api/admin/audit",
+            get(routes::admin::get_audit).delete(routes::admin::clear_audit),
+        )
         .route(
             "/api/admin/users",
             get(routes::admin::list_users).post(routes::admin::create_user),
@@ -231,14 +245,49 @@ async fn main() -> anyhow::Result<()> {
             "/api/admin/users/{id}/devices/{hash}/revoke",
             post(routes::admin::revoke_device),
         )
-        .layer(CorsLayer::permissive())
+        // Rate-limit auth + admin routes (per client IP).
+        .layer(from_fn_with_state(
+            state.clone(),
+            crate::rate_limit::rate_limit_middleware,
+        ))
+        // Cap admin/catalog-meta PUT bodies (and any other request) at 2 MiB.
+        .layer(RequestBodyLimitLayer::new(2 * 1024 * 1024))
         .layer(TraceLayer::new_for_http())
         .layer(NormalizePathLayer::trim_trailing_slash())
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!("listening on http://{addr}");
-    axum::serve(listener, app).await?;
+    // Graceful shutdown: stop accepting new connections on Ctrl-C / SIGTERM and
+    // let in-flight downloads / SSE streams finish (up to 30s) before exiting.
+    let shutdown = async {
+        let ctrl_c = async {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("failed to install Ctrl-C handler");
+        };
+
+        #[cfg(unix)]
+        let terminate = async {
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("install terminate handler")
+                .recv()
+                .await;
+        };
+
+        #[cfg(not(unix))]
+        let terminate = std::future::pending::<()>();
+
+        tokio::select! {
+            _ = ctrl_c => {},
+            _ = terminate => {},
+        }
+        tracing::info!("shutdown signal received, draining in-flight requests…");
+    };
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
+        .await?;
 
     Ok(())
 }

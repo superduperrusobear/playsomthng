@@ -441,8 +441,6 @@ function GameDetailContent({
     el.style.transform = "translate(0,0) scale(1,1)";
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const hasOrigin = !!origin;
-
   return (
     <div className="-mt-8 flex h-full min-h-0 flex-col bg-transparent">
       {/* Bleed hero under the frameless chrome (matches App.tsx h-8 spacer + WindowChrome) */}
@@ -452,7 +450,7 @@ function GameDetailContent({
         className="relative w-full shrink-0 overflow-hidden"
         style={{
           height: "clamp(180px, 28vh, 260px)",
-          animation: hasOrigin ? "gdSlideDown 0.42s cubic-bezier(0.22,1,0.36,1) both" : undefined,
+          animation: "gdFadeIn 0.5s ease-out both",
           maskImage: "linear-gradient(to bottom, black 70%, transparent 100%)",
           WebkitMaskImage: "linear-gradient(to bottom, black 70%, transparent 100%)",
         }}
@@ -481,7 +479,10 @@ function GameDetailContent({
         {/* Title — aligned to content max-width */}
         <div className="absolute bottom-6 inset-x-0 z-10">
           <div className="mx-auto px-6" style={{ maxWidth: 1280 }}>
-            <h1 className="font-title text-[clamp(2rem,5vw,4rem)] leading-none tracking-wider text-white drop-shadow-[0_4px_32px_rgba(0,0,0,0.9)]">
+            <h1
+              className="font-title text-[clamp(2rem,5vw,4rem)] leading-none tracking-wider text-white drop-shadow-[0_4px_32px_rgba(0,0,0,0.9)]"
+              style={{ animation: "storeTitleIn 0.55s cubic-bezier(0.22, 1, 0.36, 1) 0.08s both" }}
+            >
               {game.title}
             </h1>
           </div>
@@ -495,30 +496,85 @@ function GameDetailContent({
             className="mx-auto flex items-start gap-6 px-6 pt-5 pb-8"
             style={{ maxWidth: 1280 }}
           >
-            {/* LEFT: Cover art — no fade wrapper so the FLIP animation is visible from the first frame */}
-            <div
-              ref={coverWrapRef}
-              className="shrink-0 rounded-xl overflow-hidden shadow-[0_12px_40px_rgba(0,0,0,0.7)]"
-              style={{ width: "clamp(160px, 20vw, 260px)", transformOrigin: "top left" }}
-            >
-              {cover ? (
-                <img
-                  src={cover}
-                  alt={game.title}
-                  className="w-full h-auto block"
-                  draggable={false}
-                />
-              ) : (
-                <div className="w-full bg-[#1a1a1a]" style={{ aspectRatio: "3/4" }} />
+            {/* LEFT: Cover art — the store card, landed. Same border, glass, reflection,
+                and ambient glow so the click reads as the object arriving, not a page swap. */}
+            <div className="relative shrink-0" style={{ width: "clamp(160px, 20vw, 260px)" }}>
+              {/* Ambient light fades in after the card lands (glow stays put during the flight) */}
+              {cover && (
+                <div
+                  aria-hidden
+                  className="pointer-events-none absolute -inset-8"
+                  style={{ animation: "gdFadeIn 0.7s 0.45s both" }}
+                >
+                  <img
+                    src={cover}
+                    alt=""
+                    draggable={false}
+                    className="h-full w-full rounded-[36px] object-cover"
+                    style={{
+                      filter: "blur(44px) saturate(1.6) brightness(0.8)",
+                      opacity: 0.45,
+                      WebkitMaskImage:
+                        "radial-gradient(ellipse 65% 65% at center, #000 30%, transparent 75%)",
+                      maskImage:
+                        "radial-gradient(ellipse 65% 65% at center, #000 30%, transparent 75%)",
+                    }}
+                  />
+                </div>
               )}
+
+              <div
+                ref={coverWrapRef}
+                className="relative overflow-hidden rounded-xl border border-white/15 bg-[#101010] card-shadow-store-selected"
+                style={
+                  {
+                    aspectRatio: "3 / 4",
+                    transformOrigin: "top left",
+                    WebkitBoxReflect:
+                      "below 12px linear-gradient(to bottom, transparent 78%, rgba(0,0,0,0.28) 100%)",
+                  } as React.CSSProperties
+                }
+              >
+                {cover ? (
+                  <img
+                    src={cover}
+                    alt={game.title}
+                    className="block h-full w-full object-cover"
+                    draggable={false}
+                  />
+                ) : (
+                  <div className="h-full w-full bg-[#1a1a1a]" />
+                )}
+                {/* Glass edge — same finish as the store card */}
+                <div
+                  aria-hidden
+                  className="pointer-events-none absolute inset-0 rounded-xl"
+                  style={{
+                    background:
+                      "linear-gradient(160deg, rgba(255,255,255,0.09) 0%, rgba(255,255,255,0.02) 28%, transparent 55%, rgba(0,0,0,0.12) 100%)",
+                    mixBlendMode: "overlay",
+                  }}
+                />
+              </div>
             </div>
 
             {/* CENTER: description + screenshots + sysreqs */}
-            <div className="flex-1 min-w-0 space-y-6" style={{ animation: hasOrigin ? "gdFadeIn 0.5s 0.1s both" : undefined }}>
+            <div className="flex-1 min-w-0 space-y-6" style={{ animation: "gdFadeIn 0.5s 0.16s both" }}>
               {game.description && (
                 <section>
                   <Label>About this game</Label>
                   <p className="mt-3 text-[14px] leading-[1.8] text-[#a8a8b8] whitespace-pre-wrap">{game.description}</p>
+                </section>
+              )}
+
+              {game.specialInstructions && (
+                <section>
+                  <Label>Before you play</Label>
+                  <div className="mt-3 rounded-lg border border-amber-500/25 bg-amber-500/[0.06] px-4 py-3">
+                    <p className="text-[13px] leading-[1.7] text-amber-100/80 whitespace-pre-wrap">
+                      {game.specialInstructions}
+                    </p>
+                  </div>
                 </section>
               )}
 
@@ -540,7 +596,7 @@ function GameDetailContent({
         {/* RIGHT: Details column (pushed when side panel opens) */}
         <div
           className="shrink-0 space-y-6 border-l border-white/5 px-4 pt-5 pb-8 text-right"
-          style={{ width: "clamp(140px, 13vw, 200px)" }}
+          style={{ width: "clamp(140px, 13vw, 200px)", animation: "gdFadeIn 0.5s 0.22s both" }}
         >
           <section>
             <LabelRight>Details</LabelRight>
@@ -614,7 +670,7 @@ function GameDetailContent({
       {/* ── Bottom action bar — same max-width as content ── */}
       <div
         className="relative z-20 shrink-0 border-t border-white/5"
-        style={{ animation: hasOrigin ? "gdSlideUp 0.42s 0.06s both" : undefined }}
+        style={{ animation: "gdSlideUp 0.45s cubic-bezier(0.22,1,0.36,1) 0.2s both" }}
       >
       <div className="mx-auto flex items-center gap-8 px-6 py-4" style={{ maxWidth: 1280 }}>
         {/* Main action group */}

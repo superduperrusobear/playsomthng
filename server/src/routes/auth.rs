@@ -1,19 +1,13 @@
 use axum::{
     Json,
-    body::Body,
     extract::{Path, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
-    response::Response,
+    http::{HeaderMap, StatusCode},
 };
-use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use serde::Deserialize;
 use serde_json::json;
-use std::path::PathBuf;
 
 use crate::auth;
 use crate::state::{AppState, AuthSession};
-
-const MAX_AVATAR_BYTES: usize = 2_500_000;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,54 +49,6 @@ pub async fn post_challenge(
     Json(json!({ "nonce": nonce }))
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AvatarUploadBody {
-    pub image_base64: String,
-    pub content_type: String,
-}
-
-fn ext_for_mime(ct: &str) -> &'static str {
-    let c = ct.to_ascii_lowercase();
-    if c.contains("png") {
-        return "png";
-    }
-    if c.contains("webp") {
-        return "webp";
-    }
-    if c.contains("gif") {
-        return "gif";
-    }
-    "jpg"
-}
-
-fn mime_for_ext(path: &std::path::Path) -> &'static str {
-    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-    match ext.to_ascii_lowercase().as_str() {
-        "jpg" | "jpeg" => "image/jpeg",
-        "png" => "image/png",
-        "webp" => "image/webp",
-        "gif" => "image/gif",
-        _ => "application/octet-stream",
-    }
-}
-
-fn remove_old_avatars(dir: &std::path::Path, user_id: &str) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for e in entries.flatten() {
-        let path = e.path();
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        if name.starts_with(user_id) && name.as_bytes().get(user_id.len()) == Some(&b'.') {
-            let _ = std::fs::remove_file(&path);
-        }
-    }
-}
-
 pub async fn post_login(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -128,7 +74,6 @@ pub async fn post_login(
     };
 
     let hw = body.hardware_uuid.as_deref();
-    let origin = state.config.public_api_origin();
     match auth::login(
         &state.data_dir,
         &state.hw_salt,
@@ -139,25 +84,25 @@ pub async fn post_login(
         body.public_key.as_deref(),
         verified_nonce.as_deref(),
         body.signature.as_deref(),
-        &origin,
     ) {
         Ok(res) => {
-            // Session stores the salted hash, never the raw SMBIOS UUID.
-            let login_hardware_uuid = if res.user.role == "admin" {
-                None
-            } else {
-                body.hardware_uuid
-                    .as_deref()
-                    .and_then(auth::normalize_hardware_uuid)
-                    .map(|u| auth::hash_hardware(&state.hw_salt, &u))
-            };
+            // Every role, including admins, is bound to the enrolled machine.
+            // The session stores only the salted fingerprint, never the SMBIOS UUID.
+            let login_hardware_uuid = body
+                .hardware_uuid
+                .as_deref()
+                .and_then(auth::normalize_hardware_uuid)
+                .map(|u| auth::hash_hardware(&state.hw_salt, &u));
             // Keyed by token hash — the sessions file never holds raw credentials.
+            let now = chrono::Utc::now().timestamp();
             let mut sessions = state.auth_sessions.lock().await;
             sessions.insert(
                 auth::token_key(&res.token),
                 AuthSession {
                     user_id: res.user.id.clone(),
-                    login_hardware_uuid,
+                    login_hardware_uuid: login_hardware_uuid.clone(),
+                    created_at: now,
+                    expires_at: now + 30 * 24 * 60 * 60,
                 },
             );
             auth::save_active_sessions(&state.data_dir, &sessions);
@@ -170,6 +115,7 @@ pub async fn post_login(
                     "ip": ip,
                     "hostname": body.hostname.as_deref().unwrap_or(""),
                     "enrolled": !body.setup_key.trim().is_empty(),
+                    "device": login_hardware_uuid.as_deref().map(|h| &h[..12.min(h.len())]),
                 }),
             );
             Ok(Json(res))
@@ -198,103 +144,243 @@ pub async fn post_login(
     }
 }
 
-pub async fn post_avatar(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(body): Json<AvatarUploadBody>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let token = auth::bearer_token(&headers).ok_or((
+type ApiError = (StatusCode, Json<serde_json::Value>);
+
+#[derive(Clone)]
+struct SessionContext {
+    user_id: String,
+    session_id: String,
+    device_hash: Option<String>,
+}
+
+fn is_current_device(current: &SessionContext, hw_hash: &str) -> bool {
+    current.device_hash.as_deref() == Some(hw_hash)
+}
+
+fn is_current_session(current: &SessionContext, session_id: &str) -> bool {
+    current.session_id == session_id
+}
+
+async fn require_session(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<SessionContext, ApiError> {
+    let token = auth::bearer_token(headers).ok_or((
         StatusCode::UNAUTHORIZED,
         Json(json!({ "error": "Missing Authorization" })),
     ))?;
-    let user_id = {
-        let sessions = state.auth_sessions.lock().await;
-        sessions.get(&auth::token_key(&token)).map(|s| s.user_id.clone()).ok_or((
+    let session_id = auth::token_key(&token);
+    let sessions = state.auth_sessions.lock().await;
+    let session = sessions
+        .get(&session_id)
+        .filter(|s| auth::session_device_is_valid(&state.data_dir, &state.hw_salt, s))
+        .ok_or((
             StatusCode::UNAUTHORIZED,
             Json(json!({ "error": "Invalid session" })),
-        ))?
+        ))?;
+    Ok(SessionContext {
+        user_id: session.user_id.clone(),
+        session_id,
+        device_hash: session.login_hardware_uuid.clone(),
+    })
+}
+
+/// Account security inventory. Session IDs are one-way token hashes, never credentials.
+pub async fn get_security(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let current = require_session(&headers, &state).await?;
+    let list = auth::hardware_enrollments_for_user(
+        &state.data_dir,
+        &state.hw_salt,
+        &current.user_id,
+    );
+    let hostnames = list
+        .iter()
+        .map(|device| (device.hw_hash.clone(), device.hostname.clone()))
+        .collect::<std::collections::HashMap<_, _>>();
+    let devices = list
+        .into_iter()
+        .map(|device| {
+            let is_current = current.device_hash.as_deref() == Some(device.hw_hash.as_str());
+            json!({
+                "hwHash": device.hw_hash,
+                "hostname": device.hostname,
+                "enrolledAt": device.enrolled_at,
+                "lastSeenAt": device.last_seen_at,
+                "lastDownloadAt": device.last_download_at,
+                "current": is_current,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut active = {
+        let sessions = state.auth_sessions.lock().await;
+        sessions
+            .iter()
+            .filter(|(_, session)| {
+                session.user_id == current.user_id
+                    && auth::session_device_is_valid(&state.data_dir, &state.hw_salt, session)
+            })
+            .map(|(session_id, session)| {
+                let device_hash = session.login_hardware_uuid.clone();
+                let hostname = device_hash
+                    .as_ref()
+                    .and_then(|hash| hostnames.get(hash))
+                    .cloned()
+                    .unwrap_or_else(|| "Unknown device".to_string());
+                json!({
+                    "sessionId": session_id,
+                    "deviceHash": device_hash,
+                    "hostname": hostname,
+                    "createdAt": session.created_at,
+                    "expiresAt": session.expires_at,
+                    "current": session_id == &current.session_id,
+                })
+            })
+            .collect::<Vec<_>>()
     };
+    active.sort_by(|a, b| {
+        b.get("current")
+            .and_then(|v| v.as_bool())
+            .cmp(&a.get("current").and_then(|v| v.as_bool()))
+            .then_with(|| {
+                b.get("createdAt")
+                    .and_then(|v| v.as_i64())
+                    .cmp(&a.get("createdAt").and_then(|v| v.as_i64()))
+            })
+    });
+    Ok(Json(json!({ "devices": devices, "sessions": active })))
+}
 
-    let bytes = B64.decode(body.image_base64.trim()).map_err(|_| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "Invalid base64 image" })),
-        )
-    })?;
-
-    if bytes.is_empty() || bytes.len() > MAX_AVATAR_BYTES {
+/// Removes an old enrolled machine and every session bound to it.
+/// The current machine is deliberately immutable from the account screen.
+pub async fn delete_device(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(hw_hash): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let current = require_session(&headers, &state).await?;
+    if is_current_device(&current, &hw_hash) {
         return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "Image too large or empty" })),
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "CURRENT_DEVICE" })),
         ));
     }
 
-    let dir = state.data_dir.join("auth").join("avatars");
-    std::fs::create_dir_all(&dir).map_err(|_| {
+    let _guard = state.auth_mutex.lock().await;
+    let removed = auth::revoke_device(
+        &state.data_dir,
+        &state.hw_salt,
+        &current.user_id,
+        &hw_hash,
+    )
+    .map_err(|_| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "Could not create avatar directory" })),
+            Json(json!({ "error": "Could not remove device" })),
         )
     })?;
+    if !removed {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "Device not found" })),
+        ));
+    }
 
-    remove_old_avatars(&dir, &user_id);
-    let ext = ext_for_mime(&body.content_type);
-    let path: PathBuf = dir.join(format!("{user_id}.{ext}"));
-    std::fs::write(&path, &bytes).map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "Could not save avatar" })),
-        )
-    })?;
-
-    let origin = state.config.public_api_origin();
-    let avatar_url = format!(
-        "{}/api/auth/avatars/{}",
-        origin.trim_end_matches('/'),
-        user_id
+    let sessions_revoked = {
+        let mut sessions = state.auth_sessions.lock().await;
+        let before = sessions.len();
+        sessions.retain(|_, session| {
+            !(session.user_id == current.user_id
+                && session.login_hardware_uuid.as_deref() == Some(hw_hash.as_str()))
+        });
+        let removed = before - sessions.len();
+        auth::save_active_sessions(&state.data_dir, &sessions);
+        removed
+    };
+    crate::audit::log(
+        &state.data_dir,
+        "device_self_revoked",
+        json!({
+            "user": auth::username_for_id(&state.data_dir, &current.user_id)
+                .unwrap_or_else(|| current.user_id.clone()),
+            "device": hw_hash,
+            "sessionsRevoked": sessions_revoked,
+            "ip": crate::audit::client_ip(&headers),
+        }),
     );
-    Ok(Json(json!({ "avatarUrl": avatar_url })))
+    Ok(Json(json!({ "ok": true, "sessionsRevoked": sessions_revoked })))
 }
 
-pub async fn get_devices(
+/// Signs out one other session. The current session cannot delete itself here.
+pub async fn delete_session(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let token = auth::bearer_token(&headers).ok_or((
-        StatusCode::UNAUTHORIZED,
-        Json(json!({ "error": "Missing Authorization" })),
-    ))?;
-    let user_id = {
-        let sessions = state.auth_sessions.lock().await;
-        sessions.get(&auth::token_key(&token)).map(|s| s.user_id.clone()).ok_or((
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "Invalid session" })),
-        ))?
+    Path(session_id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let current = require_session(&headers, &state).await?;
+    if is_current_session(&current, &session_id) {
+        return Err((
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "CURRENT_SESSION" })),
+        ));
+    }
+    let removed = {
+        let mut sessions = state.auth_sessions.lock().await;
+        let belongs_to_user = sessions
+            .get(&session_id)
+            .map(|session| session.user_id == current.user_id)
+            .unwrap_or(false);
+        if belongs_to_user {
+            sessions.remove(&session_id);
+            auth::save_active_sessions(&state.data_dir, &sessions);
+        }
+        belongs_to_user
     };
-    let list = auth::hardware_enrollments_for_user(&state.data_dir, &state.hw_salt, &user_id);
-    let devices = list
-        .into_iter()
-        .map(|d| json!({ "hwHash": d.hw_hash, "hostname": d.hostname, "enrolledAt": d.enrolled_at }))
-        .collect::<Vec<_>>();
-    Ok(Json(json!({ "devices": devices })))
+    if !removed {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "Session not found" })),
+        ));
+    }
+    crate::audit::log(
+        &state.data_dir,
+        "session_self_revoked",
+        json!({
+            "user": auth::username_for_id(&state.data_dir, &current.user_id)
+                .unwrap_or_else(|| current.user_id.clone()),
+            "session": &session_id[..12.min(session_id.len())],
+            "ip": crate::audit::client_ip(&headers),
+        }),
+    );
+    Ok(Json(json!({ "ok": true })))
 }
 
-pub async fn get_avatar(
-    State(state): State<AppState>,
-    Path(user_id): Path<String>,
-) -> Result<Response<Body>, StatusCode> {
-    uuid::Uuid::parse_str(&user_id).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let path = auth::find_avatar_path(&state.data_dir, &user_id).ok_or(StatusCode::NOT_FOUND)?;
-    let bytes = tokio::fs::read(&path)
-        .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
-    let ct = mime_for_ext(&path);
-    let mut res = Response::new(Body::from(bytes));
-    res.headers_mut()
-        .insert(header::CONTENT_TYPE, HeaderValue::from_static(ct));
-    res.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=3600"),
-    );
-    Ok(res)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn context() -> SessionContext {
+        SessionContext {
+            user_id: "user-1".into(),
+            session_id: "session-current".into(),
+            device_hash: Some("device-current".into()),
+        }
+    }
+
+    #[test]
+    fn current_device_is_protected() {
+        let current = context();
+        assert!(is_current_device(&current, "device-current"));
+        assert!(!is_current_device(&current, "device-old"));
+    }
+
+    #[test]
+    fn current_session_is_protected() {
+        let current = context();
+        assert!(is_current_session(&current, "session-current"));
+        assert!(!is_current_session(&current, "session-old"));
+    }
 }

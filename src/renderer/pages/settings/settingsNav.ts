@@ -1,7 +1,6 @@
 import accountIcon from "../../assets/icons/account-settings-svgrepo-com.svg";
 import storageIcon from "../../assets/icons/storage-1-svgrepo-com.svg";
 import computerIcon from "../../assets/icons/computer-svgrepo-com.svg";
-import scriptIcon from "../../assets/icons/script-svgrepo-com.svg";
 import adminIcon from "../../assets/icons/back-backward-development-svgrepo-com.svg";
 import serverIcon from "../../assets/icons/settings-svgrepo-com.svg";
 
@@ -31,25 +30,19 @@ export const SETTINGS_LINKS: SettingsLinkMeta[] = [
   {
     path: "/settings/system",
     label: "System info",
-    description: "CPU, RAM, drives, displays, and OS details.",
+    description: "A clean overview of this computer's hardware and operating system.",
     icon: computerIcon,
   },
   {
     path: "/settings/server",
     label: "Server",
-    description: "Library server URL — connect to your Proxmox machine.",
+    description: "Library server address and connection status.",
     icon: serverIcon,
-  },
-  {
-    path: "/settings/scripts",
-    label: "Scripts",
-    description: "One-click helpers and troubleshooting shortcuts.",
-    icon: scriptIcon,
   },
   {
     path: "/settings/admin",
     label: "Admin panel",
-    description: "Sources, import editor, metadata, IGDB, and publish controls.",
+    description: "Publish games, manage users, and view logs.",
     icon: adminIcon,
     adminOnly: true,
   },

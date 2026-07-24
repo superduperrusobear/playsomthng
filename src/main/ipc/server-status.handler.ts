@@ -1,5 +1,5 @@
 import { IpcMain } from "electron";
-import { IpcChannel, ServerStatusSchema } from "../../shared/schemas";
+import { IpcChannel, IpcRequestSchema, ServerStatusSchema } from "../../shared/schemas";
 import type { ServerState } from "../../shared/schemas";
 import { SettingsService } from "../services/settings.service";
 import { debugFetch } from "../utils/network-debug";
@@ -25,9 +25,8 @@ function friendlyError(raw: string): string {
   return "Could not reach the server";
 }
 
-async function probeServer(baseUrl: string, apiKey?: string) {
+async function probeServer(baseUrl: string) {
   const headers: Record<string, string> = { Accept: "application/json" };
-  if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
 
   const paths = ["/health", "/api/health"];
   let lastErrorMsg = "Unreachable";
@@ -105,8 +104,9 @@ export function normalizeServerUrl(raw: string): string | null {
 }
 
 export function registerServerStatusHandlers(ipcMain: IpcMain) {
-  ipcMain.handle(IpcChannel.SERVER_STATUS_PROBE, async (_e, payload: { baseUrl: string }) => {
-    const url = normalizeServerUrl(payload?.baseUrl ?? "");
+  ipcMain.handle(IpcChannel.SERVER_STATUS_PROBE, async (_e, raw: unknown) => {
+    const { baseUrl: rawBaseUrl } = IpcRequestSchema[IpcChannel.SERVER_STATUS_PROBE].parse(raw);
+    const url = normalizeServerUrl(rawBaseUrl);
     if (!url) {
       return ServerStatusSchema.parse({
         online: false,
@@ -127,6 +127,6 @@ export function registerServerStatusHandlers(ipcMain: IpcMain) {
         serverState: "unconfigured" satisfies ServerState,
       });
     }
-    return probeServer(source.baseUrl, source.apiKey);
+    return probeServer(source.baseUrl);
   });
 }

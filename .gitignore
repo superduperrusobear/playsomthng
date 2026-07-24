@@ -17,6 +17,7 @@ server/config.proxmox.json
 
 # ── Runtime server data: real users, keys, salt, sessions ────
 server/data/
+server/*.db
 setup-keys.txt
 
 # ── Archives / backups ───────────────────────────────────────

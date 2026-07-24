@@ -114,22 +114,66 @@
       0 8px 22px -8px rgba(0, 0, 0, 0.42);
   }
 
-  /** Store carousel cards — tight falloff, no wide halos */
+  /** Store carousel cards — deep grounded shadow on center, receding falloff behind */
   .card-shadow-store-selected {
     box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.08),
-      0 0 0 1px rgba(255, 255, 255, 0.05),
-      0 4px 16px -4px rgba(0, 0, 0, 0.52);
+      inset 0 1px 0 rgba(255, 255, 255, 0.1),
+      0 0 0 1px rgba(255, 255, 255, 0.06),
+      0 18px 40px -14px rgba(0, 0, 0, 0.75),
+      0 0 60px -12px rgba(255, 255, 255, 0.07);
   }
 
   .card-shadow-store-mid {
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.05),
-      0 2px 10px -3px rgba(0, 0, 0, 0.45);
+      0 10px 26px -12px rgba(0, 0, 0, 0.6);
   }
 
   .card-shadow-store-far {
-    box-shadow: 0 1px 5px -2px rgba(0, 0, 0, 0.48);
+    box-shadow: 0 6px 18px -10px rgba(0, 0, 0, 0.55);
+  }
+
+  /** Filter dropdown menu — quick settle-in */
+  .store-menu {
+    transform-origin: top left;
+    animation: store-menu-in 0.16s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  /** Carousel scroller: edge cards fade out instead of hard-clipping at the boundary */
+  .store-track-mask {
+    -webkit-mask-image: linear-gradient(to right, transparent 0, #000 6%, #000 94%, transparent 100%);
+    mask-image: linear-gradient(to right, transparent 0, #000 6%, #000 94%, transparent 100%);
+  }
+
+  /** Ambient art glow behind the carousel — soft, colorful, no hard edges */
+  .store-backdrop {
+    filter: blur(90px) saturate(1.8) brightness(0.7);
+    opacity: 0.34;
+    animation: store-backdrop-in 0.8s ease-out both;
+    -webkit-mask-image: radial-gradient(ellipse 60% 60% at center, #000 30%, transparent 72%);
+    mask-image: radial-gradient(ellipse 60% 60% at center, #000 30%, transparent 72%);
+  }
+
+  /** One-shot light sweep when a card lands in the carousel center */
+  .store-sheen {
+    pointer-events: none;
+    position: absolute;
+    top: -12%;
+    bottom: -12%;
+    left: 0;
+    width: 55%;
+    z-index: 2;
+    background: linear-gradient(
+      105deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0.2) 45%,
+      rgba(255, 255, 255, 0.05) 60%,
+      transparent 100%
+    );
+    mix-blend-mode: screen;
+    opacity: 0;
+    transform: translateX(-140%) skewX(-16deg);
+    animation: store-sheen-sweep 1.1s cubic-bezier(0.25, 0.46, 0.45, 0.94) 0.18s forwards;
   }
 
   /** Slow highlight — quiet at rest; stronger only on `.group:hover` (cards stay secondary to content) */
@@ -157,11 +201,6 @@
     animation: card-glimmer-strong 3.2s ease-in-out infinite;
   }
 
-  .card-glimmer--store {
-    mix-blend-mode: overlay;
-    animation-duration: 7s;
-  }
-
   @media (prefers-reduced-motion: reduce) {
     .app-bg-gradient {
       animation: none;
@@ -172,11 +211,19 @@
       animation: none;
     }
 
-    .card-glimmer,
-    .card-glimmer--store {
+    .card-glimmer {
       animation: none;
       background-position: 50% 50%;
       opacity: 0.28;
+    }
+
+    .store-sheen {
+      animation: none;
+      opacity: 0;
+    }
+
+    .store-backdrop {
+      animation: none;
     }
   }
 }
@@ -232,16 +279,38 @@
   }
 }
 
-/* ── Card pick "pack opening" pulse ─────────────────────────────────────────
-   Applied to the carousel card on double-click: it jumps/flashes like a card
-   being pulled from a pack before the detail page builds around it.
+@keyframes store-menu-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Ambient backdrop crossfade when the centered game changes */
+@keyframes store-backdrop-in {
+  from { opacity: 0; }
+  to   { opacity: 0.34; }
+}
+
+/* Carousel title: text settles into focus as the card lands */
+@keyframes storeTitleIn {
+  from { opacity: 0; transform: translateY(10px); filter: blur(8px); }
+  to   { opacity: 1; transform: translateY(0);    filter: blur(0); }
+}
+
+/* Sheen sweep across a newly centered store card (translateX % is of the sheen, ~55% card width) */
+@keyframes store-sheen-sweep {
+  0%   { transform: translateX(-140%) skewX(-16deg); opacity: 0; }
+  15%  { opacity: 1; }
+  100% { transform: translateX(320%) skewX(-16deg); opacity: 0; }
+}
+
+/* ── Card pick pulse ─────────────────────────────────────────────────────────
+   Double-click: the card lifts and brightens once before the detail page opens.
+   Start values match the selected pose so there is no jump.
    --------------------------------------------------------------------------- */
 @keyframes cardPickPulse {
-  0%   { transform: scale(1.08);                   filter: brightness(1); }
-  20%  { transform: scale(1.3) rotateZ(-1deg);     filter: brightness(2.8) drop-shadow(0 0 30px rgba(255,255,255,0.55)); }
-  52%  { transform: scale(1.16) rotateZ(0.5deg);   filter: brightness(1.7); }
-  78%  { transform: scale(1.24) rotateZ(-0.4deg);  filter: brightness(2.3); }
-  100% { transform: scale(1.12);                   filter: brightness(1.4); }
+  0%   { transform: translateZ(46px) translateY(-10px) scale(1.06); filter: brightness(1); }
+  35%  { transform: translateZ(60px) translateY(-16px) scale(1.16); filter: brightness(1.6) drop-shadow(0 20px 44px rgba(0, 0, 0, 0.55)); }
+  100% { transform: translateZ(52px) translateY(-12px) scale(1.1);  filter: brightness(1.3); }
 }
 
 /* ── Game detail page section enter animations ───────────────────────────── */

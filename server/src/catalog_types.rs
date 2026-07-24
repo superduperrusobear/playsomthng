@@ -43,6 +43,9 @@ pub struct CatalogGame {
     /// `published` | `draft` — set from catalog-meta. Only sent on the admin route.
     #[serde(rename = "publishState", skip_serializing_if = "Option::is_none")]
     pub publish_state: Option<String>,
+    /// Unix seconds when the admin first imported this title (meta `createdAt`).
+    #[serde(rename = "addedAt", skip_serializing_if = "Option::is_none")]
+    pub added_at: Option<i64>,
 }
 
 #[derive(Clone)]

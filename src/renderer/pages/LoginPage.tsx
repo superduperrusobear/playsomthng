@@ -6,20 +6,7 @@ import { VantaCloudsBackground } from "../components/background/VantaCloudsBackg
 import { AFrameDepthBackground } from "../components/background/AFrameDepthBackground";
 import { ConnectGate } from "../components/onboarding/ConnectGate";
 import { ServerUnreachable } from "../components/onboarding/ServerUnreachable";
-import { UserStep, CodeStep, AvatarStep, type OnboardStep } from "../components/onboarding/OnboardingFlow";
-import { invoke } from "../lib/ipc";
-import { IpcChannel, type AuthResponse } from "@shared/schemas";
-
-async function fileToBase64(file: File): Promise<string> {
-  const buf = await file.arrayBuffer();
-  const bytes = new Uint8Array(buf);
-  const chunk = 0x8000;
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
-}
+import { UserStep, CodeStep, type OnboardStep } from "../components/onboarding/OnboardingFlow";
 
 /** Server rejections arrive wrapped in Electron IPC noise — pull out the useful part. */
 function cleanError(raw: string): string {
@@ -37,11 +24,7 @@ export function LoginPage() {
   const [code, setCode] = useState("");
   const [userError, setUserError] = useState<string | null>(null);
   const [codeError, setCodeError] = useState<string | null>(null);
-  const [avatarError, setAvatarError] = useState<string | null>(null);
-  const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
-  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [pendingAuth, setPendingAuth] = useState<AuthResponse | null>(null);
 
   const login = useLogin();
   const commitSession = useCommitLoginSession();
@@ -88,10 +71,8 @@ export function LoginPage() {
     login.mutate(
       { username: username.trim(), scikde: code.trim() },
       {
-        onSuccess: (data) => {
-          setPendingAuth(data);
-          setStep("avatar");
-          setBusy(false);
+        onSuccess: async (data) => {
+          await commitSession(data);
         },
         onError: (err) => {
           const raw = err instanceof Error ? err.message : String(err);
@@ -105,42 +86,6 @@ export function LoginPage() {
     );
   }
 
-  async function handlePickAvatar(file: File) {
-    setBusy(true);
-    setAvatarError(null);
-    try {
-      const imageBase64 = await fileToBase64(file);
-      const { avatarUrl: url } = await invoke<{ avatarUrl: string }>(
-        IpcChannel.AUTH_AVATAR_UPLOAD,
-        { imageBase64, contentType: file.type || "image/jpeg" },
-      );
-      setAvatarUrl(url);
-      setAvatarPreview(URL.createObjectURL(file));
-    } catch (err) {
-      setAvatarError(err instanceof Error ? err.message : "Upload failed.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleFinish() {
-    if (!pendingAuth) return;
-    setBusy(true);
-    setAvatarError(null);
-    try {
-      await commitSession({
-        ...pendingAuth,
-        user: {
-          ...pendingAuth.user,
-          ...(avatarUrl ? { avatarUrl } : {}),
-        },
-      });
-    } catch (err) {
-      setAvatarError(err instanceof Error ? err.message : "Could not continue.");
-      setBusy(false);
-    }
-  }
-
   function body() {
     if (needsSetup) return <ConnectGate />;
 
@@ -148,7 +93,6 @@ export function LoginPage() {
       return (
         <ServerUnreachable
           url={serverUrl}
-          error={status?.error}
           retrying={server.isFetching}
           onRetry={() => void server.refetch()}
           onChangeServer={() => void reopenGate()}
@@ -192,15 +136,7 @@ export function LoginPage() {
       );
     }
 
-    return (
-      <AvatarStep
-        onPick={(f) => void handlePickAvatar(f)}
-        onFinish={() => void handleFinish()}
-        busy={busy}
-        error={avatarError}
-        previewUrl={avatarPreview}
-      />
-    );
+    return null;
   }
 
   return (

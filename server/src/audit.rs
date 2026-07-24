@@ -49,6 +49,22 @@ pub fn read(
     out
 }
 
+/// Truncates the audit trail and returns the number of entries removed.
+/// The caller should immediately append an `audit_cleared` event so the
+/// administrative action itself remains accountable.
+pub fn clear(data_dir: &Path) -> std::io::Result<usize> {
+    let path = data_dir.join("audit.jsonl");
+    let count = std::fs::read_to_string(&path)
+        .map(|raw| raw.lines().count())
+        .unwrap_or(0);
+    std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)?;
+    Ok(count)
+}
+
 /// Client IP as the reverse proxy reports it (X-Forwarded-For), else "local".
 pub fn client_ip(headers: &HeaderMap) -> String {
     headers
@@ -58,6 +74,23 @@ pub fn client_ip(headers: &HeaderMap) -> String {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "local".into())
+}
+
+/// Same as `client_ip` but parsed into an `IpAddr` for rate-limiting keys.
+/// Falls back to a loopback sentinel so direct (un-proxied) connections share
+/// a single bucket rather than being keyed on the empty string.
+pub fn client_ip_addr(headers: &HeaderMap) -> std::net::IpAddr {
+    let raw = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .map(|s| s.trim())
+        .unwrap_or("");
+    if let Ok(addr) = raw.parse::<std::net::IpAddr>() {
+        return addr;
+    }
+    // No proxy header (or unparseable) — treat as a single local client.
+    std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
 }
 
 #[cfg(test)]
@@ -105,5 +138,14 @@ mod tests {
         assert_eq!(e["event"], "key_issued");
         assert_eq!(e["user"], "mike");
         assert!(e["ts"].as_str().is_some_and(|s| s.contains('T')));
+    }
+
+    #[test]
+    fn clear_removes_entries() {
+        let d = dir();
+        log(d.path(), "login", json!({}));
+        log(d.path(), "download", json!({}));
+        assert_eq!(clear(d.path()).unwrap(), 2);
+        assert!(read(d.path(), None, 10).is_empty());
     }
 }

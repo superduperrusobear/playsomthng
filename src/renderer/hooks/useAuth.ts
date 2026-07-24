@@ -17,13 +17,10 @@ export function buildStoredSessionFromAuth(data: AuthResponse): StoredUserSessio
     token: data.token,
     tokenExpiresAt: now + 30 * SECONDS_PER_DAY,
     lastAuthenticatedAt: now,
-    ...(data.user.avatarUrl != null && data.user.avatarUrl !== ""
-      ? { avatarUrl: data.user.avatarUrl }
-      : {}),
   };
 }
 
-/** Server login only — main process gets a session (for avatar upload); renderer commits after onboarding. */
+/** Authenticate with the server; successful enrollment can be committed immediately. */
 export function useLogin() {
   return useMutation({
     mutationFn: (payload: { username: string; scikde: string }) =>

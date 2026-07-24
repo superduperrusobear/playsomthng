@@ -1,5 +1,5 @@
 import { IpcMain } from "electron";
-import { IpcChannel } from "../../shared/schemas";
+import { IpcChannel, IpcRequestSchema } from "../../shared/schemas";
 import {
   ensureSystemInfoCollected,
   getCachedSystemInfo,
@@ -17,15 +17,14 @@ export function registerSysinfoHandlers(ipcMain: IpcMain) {
 
   ipcMain.handle(IpcChannel.SYSINFO_REFRESH, async () => refreshSystemInfo());
 
-  ipcMain.handle(
-    IpcChannel.SYSINFO_DISK_CHECK,
-    async (_event, payload: { requiredBytes: number; preferredMount?: string | null }) => {
-      return checkDiskSpace(payload.requiredBytes, payload.preferredMount);
-    }
-  );
+  ipcMain.handle(IpcChannel.SYSINFO_DISK_CHECK, async (_event, raw: unknown) => {
+    const { requiredBytes, preferredMount } = IpcRequestSchema[IpcChannel.SYSINFO_DISK_CHECK].parse(raw);
+    return checkDiskSpace(requiredBytes, preferredMount ?? null);
+  });
 
   /** Recursive size of a file or directory — used by Settings → Storage (game install folders). */
-  ipcMain.handle(IpcChannel.FS_DIR_SIZE_BYTES, async (_e, raw: { path: string }) => {
-    return getDirectorySizeBytes(raw.path);
+  ipcMain.handle(IpcChannel.FS_DIR_SIZE_BYTES, async (_e, raw: unknown) => {
+    const { path: targetPath } = IpcRequestSchema[IpcChannel.FS_DIR_SIZE_BYTES].parse(raw);
+    return getDirectorySizeBytes(targetPath);
   });
 }

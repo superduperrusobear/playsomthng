@@ -5,6 +5,7 @@ import storeIcon from "../../assets/icons/store-svgrepo-com.svg";
 import libraryIcon from "../../assets/icons/library-svgrepo-com.svg";
 import downloadIcon from "../../assets/icons/download-svgrepo-com.svg";
 import settingsIcon from "../../assets/icons/settings-1390-svgrepo-com.svg";
+import { useStoreUpdateStore } from "../../store/storeUpdate.store";
 
 const items = [
   { to: "/store", icon: storeIcon, label: "Store", offlineHidden: true },
@@ -15,6 +16,7 @@ const items = [
 
 export function Dock() {
   const { isRemote } = useLibraryMode();
+  const hasStoreUpdate = useStoreUpdateStore((state) => state.hasUpdate);
 
   return (
     <nav
@@ -57,15 +59,23 @@ export function Dock() {
               }
             >
               {({ isActive }) => (
-                <img
-                  src={icon}
-                  alt=""
-                  className={cn(
-                    "h-10 w-10 object-contain invert transition-transform duration-200",
-                    isActive ? "scale-105 opacity-100" : "opacity-85 group-hover:scale-105"
+                <>
+                  <img
+                    src={icon}
+                    alt=""
+                    className={cn(
+                      "h-10 w-10 object-contain invert transition-transform duration-200",
+                      isActive ? "scale-105 opacity-100" : "opacity-85 group-hover:scale-105"
+                    )}
+                    draggable={false}
+                  />
+                  {to === "/store" && hasStoreUpdate && !isActive && (
+                    <span
+                      aria-label="Store updated"
+                      className="absolute right-2 top-2 h-2.5 w-2.5 rounded-full bg-[#d94b4b] shadow-[0_0_0_2px_rgba(8,8,8,0.9),0_0_10px_rgba(217,75,75,0.45)]"
+                    />
                   )}
-                  draggable={false}
-                />
+                </>
               )}
             </NavLink>
           );

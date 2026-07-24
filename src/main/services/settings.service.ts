@@ -146,7 +146,7 @@ export class SettingsService {
     loaded = AppSettingsSchema.parse({ ...loaded, version: SETTINGS_VERSION });
 
     const enabledSource = loaded.sources.find((s) => s.enabled);
-    logger.info(`[BOOT] RESOLVED_SOURCES=${JSON.stringify(loaded.sources)}`);
+    logger.info(`[BOOT] Resolved ${loaded.sources.length} configured source(s)`);
     if (enabledSource) {
       logger.info(`[BOOT] Using source baseUrl: ${enabledSource.baseUrl}`);
     } else {

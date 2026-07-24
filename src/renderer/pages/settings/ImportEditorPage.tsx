@@ -40,15 +40,6 @@ import {
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
-function formatBytes(b: number): string {
-  if (!b) return "—";
-  const units = ["B", "KB", "MB", "GB"];
-  let v = b;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
-  return `${v.toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
-}
-
 const ALL_PLATFORMS: PlatformTag[] = [
   "windows", "ps3", "ps4", "ps5", "xbox", "xbox-360", "xbox-one",
   "nes", "snes", "n64", "game-cube", "wii", "wii-u", "switch",
@@ -126,7 +117,7 @@ function Toggle({
     <button
       type="button"
       onClick={() => onChange(!checked)}
-      className="flex w-full items-center justify-between rounded-lg border border-[#2c2c2c] bg-[#151515] px-4 py-3 text-left"
+      className="flex w-full items-center justify-between py-2 text-left"
     >
       <div>
         <p className="text-[12px] font-medium text-[#ccc]">{label}</p>
@@ -153,11 +144,11 @@ function SectionHead({ children }: { children: React.ReactNode }) {
 
 function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return (
-    <div
-      className={`rounded-xl border border-white/[0.07] bg-white/[0.03] p-4 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.04)] ${className}`}
+    <section
+      className={`border-b border-white/[0.06] pb-6 ${className}`}
     >
       {children}
-    </div>
+    </section>
   );
 }
 
@@ -201,109 +192,84 @@ function PlatformPicker({
   );
 }
 
-// ── Launch target picker ──────────────────────────────────────────────────────
+// ── Launch targets (multi) ─────────────────────────────────────────────────────
 
-function LaunchTargetPicker({
+const EXE_RE = /\.(exe|bat|sh|rom|iso|bin|cue|img|nsp|xci|gb[ac]?|sfc|n64|z64|v64|nds|3ds|cso|pbp|msi|app|deb|rpm|dmg)$/i;
+
+/**
+ * Picks one or more launch targets from the manifest's executables.
+ * The first is the default; the user chooses among the rest at launch.
+ */
+function LaunchTargets({
   files,
-  value,
+  targets,
   onChange,
 }: {
   files: string[];
-  value: string;
-  onChange: (v: string) => void;
+  targets: string[];
+  onChange: (next: string[]) => void;
 }) {
-  const exeFiles = useMemo(
-    () => files.filter((f) => /\.(exe|bat|sh|rom|iso|bin|cue|img|nsp|xci|gb[ac]?|sfc|n64|z64|v64|nds|3ds|cso|pbp|msi|app|deb|rpm|dmg)$/i.test(f)),
-    [files],
-  );
-  const allFiles = files;
-  const [showAll, setShowAll] = useState(false);
-  const listToShow = showAll ? allFiles : exeFiles;
+  const [manual, setManual] = useState("");
+  const options = useMemo(() => files.filter((f) => EXE_RE.test(f) && !targets.includes(f)), [files, targets]);
 
-  // Get file extension for icon/indicator
-  const getFileType = (filename: string) => {
-    const ext = filename.split('.').pop()?.toLowerCase() || '';
-    if (['exe', 'msi', 'bat'].includes(ext)) return '🖥️';
-    if (['rom', 'gb', 'gba', 'gbc', 'sfc', 'n64', 'z64', 'v64', 'nds', '3ds'].includes(ext)) return '🎮';
-    if (['iso', 'bin', 'cue', 'img', 'cso', 'pbp'].includes(ext)) return '💿';
-    if (['nsp', 'xci'].includes(ext)) return '🎯';
-    return '📄';
+  const add = (t: string) => {
+    const v = t.trim();
+    if (v && !targets.includes(v)) onChange([...targets, v]);
   };
+  const remove = (t: string) => onChange(targets.filter((x) => x !== t));
+  const makeDefault = (t: string) => onChange([t, ...targets.filter((x) => x !== t)]);
 
   return (
-    <div className="space-y-2">
-      <FieldInput value={value} onChange={onChange} placeholder="e.g. game.exe or rom.sfc" mono />
-      
-      {/* Debug info */}
-      {process.env.NODE_ENV === 'development' && (
-        <p className="text-[9px] text-yellow-400 font-mono">
-          DEBUG: {files.length} files loaded
-        </p>
-      )}
-      
-      {/* Show count of executable files found */}
-      {files.length > 0 ? (
-        <p className="text-[10px] text-[#666]">
-          {exeFiles.length > 0 
-            ? `Found ${exeFiles.length} executable file${exeFiles.length === 1 ? '' : 's'} (${files.length} total)`
-            : `${files.length} files found - no executables detected`
-          }
-        </p>
-      ) : (
-        <p className="text-[10px] text-[#555]">
-          No manifest files loaded yet - check if the game has a valid manifest URL
-        </p>
-      )}
-
-      {/* File picker dropdown */}
-      {files.length > 0 && (
-        <div className="max-h-48 space-y-0.5 overflow-y-auto rounded-lg border border-[#222] bg-[#131313] p-1.5 [scrollbar-width:thin] [scrollbar-color:#333_transparent]">
-          {listToShow.length === 0 ? (
-            <p className="py-2 text-center text-[10px] text-[#555]">
-              No files match the current filter
-            </p>
-          ) : (
-            listToShow.map((f) => (
-              <button
-                key={f}
-                type="button"
-                onClick={() => onChange(f)}
-                className={`flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-[11px] font-mono transition-colors hover:bg-[#202020] ${
-                  f === value ? "bg-[#1e2f4a] text-[#60a5fa]" : "text-[#888]"
-                }`}
-              >
-                <span className="text-[10px]">{getFileType(f)}</span>
-                <span className="flex-1 truncate">{f}</span>
-                {f === value && <span className="text-[9px] text-[#60a5fa]">✓</span>}
-              </button>
-            ))
-          )}
-          
-          {/* Toggle between executable files and all files */}
-          <div className="flex gap-1 pt-1">
-            {exeFiles.length > 0 && (
-              <button
-                type="button"
-                onClick={() => setShowAll(false)}
-                className={`flex-1 py-1 text-center text-[10px] transition-colors ${
-                  !showAll ? "text-[#60a5fa]" : "text-[#555] hover:text-[#888]"
-                }`}
-              >
-                Executables ({exeFiles.length})
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={() => setShowAll(true)}
-              className={`flex-1 py-1 text-center text-[10px] transition-colors ${
-                showAll ? "text-[#60a5fa]" : "text-[#555] hover:text-[#888]"
-              }`}
-            >
-              All files ({allFiles.length})
-            </button>
-          </div>
+    <div className="space-y-2.5">
+      {/* Selected targets */}
+      {targets.length > 0 && (
+        <div className="space-y-1">
+          {targets.map((t, i) => (
+            <div key={t} className="flex items-center gap-2 border-b border-white/[0.045] py-2 last:border-b-0">
+              <span className="font-mono text-[11px] text-[#cbd5e1] flex-1 truncate">{t}</span>
+              {i === 0 ? (
+                <span className="text-[9px] font-semibold uppercase text-[#7095b7]">
+                  Default
+                </span>
+              ) : (
+                <button type="button" onClick={() => makeDefault(t)} className="text-[9px] uppercase tracking-wide text-[#666] hover:text-[#aaa]">
+                  Set default
+                </button>
+              )}
+              <button type="button" onClick={() => remove(t)} className="text-[#555] hover:text-[#c88]">✕</button>
+            </div>
+          ))}
         </div>
       )}
+
+      {/* Add from manifest executables */}
+      {options.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {options.map((f) => (
+            <button
+              key={f}
+              type="button"
+              onClick={() => add(f)}
+              className="rounded-md border border-[#2c2c2c] bg-[#181818] px-2 py-1 font-mono text-[10px] text-[#888] transition-colors hover:border-[#3a5a7a] hover:text-[#60a5fa]"
+            >
+              + {f}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Manual entry */}
+      <div className="flex gap-2">
+        <FieldInput value={manual} onChange={setManual} placeholder="or type a path, e.g. bin/game.exe" mono />
+        <button
+          type="button"
+          onClick={() => { add(manual); setManual(""); }}
+          disabled={!manual.trim()}
+          className="shrink-0 rounded-lg border border-[#2c2c2c] bg-[#1a1a1a] px-3 text-[11px] font-semibold uppercase tracking-[0.1em] text-[#aaa] hover:border-[#444] disabled:opacity-30"
+        >
+          Add
+        </button>
+      </div>
     </div>
   );
 }
@@ -349,7 +315,7 @@ function IgdbPanel({
   const searchError = igdbSearch.error as Error | null;
 
   return (
-    <div className="rounded-xl border border-[#252525] bg-[#1c1c1c] p-4">
+    <div className="border-b border-white/[0.06] pb-6">
       <div className="mb-3 flex items-center justify-between">
         <SectionHead>IGDB Lookup</SectionHead>
         <button type="button" onClick={onDismiss} className="text-[11px] text-[#555] hover:text-[#888]">
@@ -377,7 +343,7 @@ function IgdbPanel({
       </div>
 
       {searchError && (
-        <p className="mt-2 rounded bg-red-500/10 px-3 py-2 text-[11px] text-red-400">
+        <p className="mt-2 text-[11px] text-red-400">
           {searchError.message.includes("503") || searchError.message.includes("unavailable")
             ? "IGDB is not configured on the server — set IGDB_CLIENT_ID and IGDB_CLIENT_SECRET."
             : searchError.message}
@@ -389,7 +355,7 @@ function IgdbPanel({
           {candidates.map((c) => (
             <div
               key={c.igdbId}
-              className="flex items-start gap-3 rounded-lg border border-[#242424] bg-[#181818] p-3"
+              className="flex items-start gap-3 border-b border-white/[0.05] py-3 last:border-b-0"
             >
               {c.coverUrl && (
                 <img
@@ -416,7 +382,7 @@ function IgdbPanel({
                 type="button"
                 onClick={() => void applyCandidate(c)}
                 disabled={fetchingId === c.igdbId}
-                className="shrink-0 self-center rounded-md bg-emerald-500/15 px-3 py-1.5 text-[11px] font-medium text-emerald-400 transition-colors hover:bg-emerald-500/25 disabled:opacity-40"
+                className="shrink-0 self-center text-[10px] font-semibold uppercase tracking-[0.1em] text-[#6f9973] transition-colors hover:text-[#9bc69f] disabled:opacity-40"
               >
                 {fetchingId === c.igdbId ? "Loading…" : "Use"}
               </button>
@@ -479,7 +445,7 @@ function ScreenshotEditor({
       {urls.length > 0 && (
         <div className="space-y-1">
           {urls.map((url) => (
-            <div key={url} className="flex items-center gap-2 rounded-lg border border-[#222] bg-[#141414] px-3 py-2">
+            <div key={url} className="flex items-center gap-2 border-b border-white/[0.045] py-2 last:border-b-0">
               <p className="min-w-0 flex-1 truncate font-mono text-[10px] text-[#777]">{url}</p>
               <button
                 type="button"
@@ -513,7 +479,7 @@ export function ImportEditorPage() {
 
   // Admin manifest query - uses admin endpoint without auth
   const settingsQuery = useSettings();
-  const { data: manifest, isLoading: manifestLoading, error: manifestError } = useQuery({
+  const { data: manifest } = useQuery({
     queryKey: ["admin-manifest", id, settingsQuery.data?.sources[0]?.baseUrl],
     queryFn: async () => {
       if (!id) throw new Error("No game ID provided");
@@ -583,7 +549,8 @@ export function ImportEditorPage() {
     })();
 
     patch({
-      displayName: form?.displayName === form?.id ? meta.name : form?.displayName ?? meta.name,
+      // Always adopt the IGDB name so the game is titled correctly.
+      displayName: meta.name,
       description: meta.summary ?? form?.description,
       shortDescription: form?.shortDescription ?? shortFromSummary ?? undefined,
       developer: devJoined ?? form?.developer,
@@ -618,6 +585,18 @@ export function ImportEditorPage() {
   const isPublished = form?.publishState === "published";
   const isBusy = saveMeta.isPending;
   const manifestFiles = manifest?.files.map((f) => f.path) ?? [];
+
+  // Launch targets: prefer the list; fall back to the legacy single target.
+  const launchTargets =
+    form?.launchTargets && form.launchTargets.length > 0
+      ? form.launchTargets
+      : form?.launchTarget
+        ? [form.launchTarget]
+        : [];
+  /** Keep the legacy `launchTarget` in sync with the first list entry. */
+  const setLaunchTargets = (next: string[]) =>
+    patch({ launchTargets: next, launchTarget: next[0] ?? null });
+
   const defaultIgdbQuery = form?.displayName && form.displayName !== form?.id
     ? form.displayName
     : catalogItem?.title ?? "";
@@ -638,12 +617,7 @@ export function ImportEditorPage() {
       <SettingsBackLink />
 
       {/* ── Header ── */}
-      <div className="sticky top-0 z-10 border-b border-white/[0.06] bg-[#0a0a0a]/90 px-5 py-4 backdrop-blur-md">
-        <p className="mb-2 text-[11px] leading-relaxed text-[#7a7a7a]">
-          Changes save to the catalog server.{" "}
-          <span className="text-[#9a9a9a]">Publish to Store</span> adds this title to the home carousel; the
-          library list updates as soon as you save.
-        </p>
+      <div className="border-b border-white/[0.06] px-5 py-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="font-title text-[clamp(1.1rem,2vw,1.35rem)] tracking-[0.06em] text-white/95">
@@ -702,28 +676,6 @@ export function ImportEditorPage() {
           </div>
         </div>
 
-        {/* Status badges */}
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <span
-            className={`rounded px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${
-              isPublished
-                ? "bg-emerald-500/15 text-emerald-400"
-                : "border border-white/10 bg-white/[0.04] text-[#888]"
-            }`}
-          >
-            {isPublished ? "On Store carousel" : "Draft — not on carousel"}
-          </span>
-          {form.emulatorRequired && (
-            <span className="rounded bg-amber-500/15 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-400">
-              Emulator required
-            </span>
-          )}
-          {manifest && (
-            <span className="text-[10px] text-[#555]">
-              {formatBytes(manifest.totalBytes)} · {manifest.files.length} files
-            </span>
-          )}
-        </div>
       </div>
 
       {/* ── Body ── */}
@@ -742,21 +694,12 @@ export function ImportEditorPage() {
             <button
               type="button"
               onClick={() => setShowIgdb(true)}
-              className="flex w-full items-center gap-3 rounded-xl border border-dashed border-[#2c2c2c] bg-[#181818] px-4 py-3 text-left transition-colors hover:border-[#3a3a3a] hover:bg-[#1e1e1e]"
+              className="flex w-full items-baseline justify-between border-b border-white/[0.06] pb-4 text-left"
             >
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#252525] text-[14px]">
-                🎮
-              </div>
-              <div>
-                <p className="text-[12px] font-medium text-[#aaa]">
-                  {form.igdbId ? "IGDB data applied — search again to update" : "Search IGDB for metadata"}
-                </p>
-                <p className="text-[10px] text-[#555]">
-                  {form.igdbId
-                    ? `IGDB id: ${form.igdbId}${form.igdbSlug ? ` · ${form.igdbSlug}` : ""}`
-                    : "Optional — cover, description, credits, release date from IGDB"}
-                </p>
-              </div>
+              <span className="text-[11px] font-medium text-[#888]">
+                {form.igdbId ? "Update from IGDB" : "Search IGDB"}
+              </span>
+              {form.igdbId && <span className="font-mono text-[9px] text-[#505050]">{form.igdbId}</span>}
             </button>
           )}
 
@@ -884,54 +827,24 @@ export function ImportEditorPage() {
             </div>
           </Card>
 
-          {/* Launch target */}
+          {/* Launch targets */}
           <Card>
-            <SectionHead>Launch target</SectionHead>
-            <p className="mb-3 text-[10px] leading-relaxed text-[#555]">
-              Relative path inside the package root — the file launched when the user plays.
-              For PC games this is an <span className="text-[#777]">.exe</span>; for ROMs it's the ROM
-              file itself.
-            </p>
-            
-            {/* Debug manifest loading */}
-            {process.env.NODE_ENV === 'development' && (
-              <div className="mb-2 rounded bg-yellow-500/10 p-2 text-[9px] font-mono text-yellow-400">
-                <div>Manifest URL: {catalogItem?.manifestUrl || 'undefined'}</div>
-                <div>Manifest loading: {manifestLoading ? 'true' : 'false'}</div>
-                <div>Manifest files: {manifest?.files?.length || 0}</div>
-                {manifestError && <div>Error: {String(manifestError)}</div>}
-              </div>
-            )}
-            
-            <LaunchTargetPicker
+            <SectionHead>Launch targets</SectionHead>
+            <LaunchTargets
               files={manifestFiles}
-              value={form.launchTarget ?? ""}
-              onChange={(v) => patch({ launchTarget: v || null })}
+              targets={launchTargets}
+              onChange={setLaunchTargets}
             />
           </Card>
 
           {/* Special instructions */}
           <Card>
             <SectionHead>Special instructions</SectionHead>
-            <p className="mb-2 text-[10px] text-[#555]">
-              Shown to users before launch — e.g. "Mount ISO before launching", "Run as administrator".
-            </p>
             <FieldTextarea
               value={form.specialInstructions ?? ""}
               onChange={(v) => patch({ specialInstructions: v || null })}
               rows={3}
-              placeholder="Any setup steps or warnings the user needs to know…"
-            />
-          </Card>
-
-          {/* Admin notes */}
-          <Card>
-            <SectionHead>Admin notes (internal)</SectionHead>
-            <FieldTextarea
-              value={form.adminNotes ?? ""}
-              onChange={(v) => patch({ adminNotes: v || null })}
-              rows={2}
-              placeholder="Internal notes — not shown to users"
+              placeholder="Setup steps or warnings shown to the user before launch…"
             />
           </Card>
         </div>
@@ -942,7 +855,7 @@ export function ImportEditorPage() {
           <Card>
             <SectionHead>Cover image</SectionHead>
             {form.coverImageUrl && (
-              <div className="mb-3 overflow-hidden rounded-lg border border-[#2c2c2c]">
+              <div className="mb-3 overflow-hidden">
                 <img
                   src={form.coverImageUrl}
                   alt="Cover"
@@ -956,10 +869,6 @@ export function ImportEditorPage() {
               onChange={(v) => patch({ coverImageUrl: v || null })}
               placeholder="https://images.igdb.com/…"
             />
-            <p className="mt-1 text-[10px] text-[#555]">
-              Paste any image URL — IGDB cover images are set automatically when you apply an IGDB
-              candidate above.
-            </p>
           </Card>
 
           {/* Screenshots */}
@@ -984,38 +893,6 @@ export function ImportEditorPage() {
             )}
           </Card>
 
-          {/* Package / manifest info (read-only) */}
-          {manifest && (
-            <Card>
-              <SectionHead>Package info</SectionHead>
-              <dl className="space-y-1.5 text-[11px]">
-                <div className="flex justify-between">
-                  <dt className="text-[#666]">ID</dt>
-                  <dd className="font-mono text-[#aaa]">{manifest.id}</dd>
-                </div>
-                <div className="flex justify-between">
-                  <dt className="text-[#666]">Type</dt>
-                  <dd className="text-[#aaa]">{manifest.packageType}</dd>
-                </div>
-                <div className="flex justify-between">
-                  <dt className="text-[#666]">Total size</dt>
-                  <dd className="text-[#aaa]">{formatBytes(manifest.totalBytes)}</dd>
-                </div>
-                <div className="flex justify-between">
-                  <dt className="text-[#666]">Files</dt>
-                  <dd className="text-[#aaa]">{manifest.files.length}</dd>
-                </div>
-                {manifest.launchTarget && (
-                  <div className="flex justify-between">
-                    <dt className="text-[#666]">Detected exe</dt>
-                    <dd className="max-w-[150px] truncate font-mono text-[#8ab4d4]" title={manifest.launchTarget}>
-                      {manifest.launchTarget}
-                    </dd>
-                  </div>
-                )}
-              </dl>
-            </Card>
-          )}
         </div>
       </div>
     </div>

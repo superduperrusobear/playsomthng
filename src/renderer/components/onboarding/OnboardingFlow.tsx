@@ -1,9 +1,9 @@
-import { useRef, FormEvent } from "react";
+import { FormEvent } from "react";
 import { CapsButton } from "../ui/CapsButton";
 import { cn } from "../../lib/cn";
 import appLogo from "../../assets/app-logo.svg";
 
-export type OnboardStep = "user" | "code" | "avatar";
+export type OnboardStep = "user" | "code";
 
 const inputClass = (invalid?: boolean) =>
   cn(
@@ -137,72 +137,6 @@ export function UserStep({
           <CapsButton label="Back" variant="muted" disabled={busy} onClick={onBack} />
         </div>
       </form>
-    </Shell>
-  );
-}
-
-/** Step 3 — optional picture, then done. */
-export function AvatarStep({
-  onPick,
-  onFinish,
-  busy,
-  error,
-  previewUrl,
-}: {
-  onPick: (file: File) => void;
-  onFinish: () => void;
-  busy: boolean;
-  error: string | null;
-  previewUrl: string | null;
-}) {
-  const fileRef = useRef<HTMLInputElement>(null);
-
-  return (
-    <Shell>
-      <div className="space-y-6">
-        <div className="flex flex-col items-center gap-4">
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => fileRef.current?.click()}
-            className={cn(
-              "flex h-24 w-24 items-center justify-center overflow-hidden rounded-2xl border border-[#333] bg-[#222]",
-              "text-[10px] uppercase tracking-[0.15em] text-[#555] transition-colors",
-              "hover:border-[#555] hover:text-[#888] disabled:opacity-50",
-            )}
-          >
-            {previewUrl ? (
-              <img src={previewUrl} alt="" className="h-full w-full object-cover" />
-            ) : busy ? (
-              "…"
-            ) : (
-              "Add photo"
-            )}
-          </button>
-          <input
-            ref={fileRef}
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              e.target.value = "";
-              if (f) onPick(f);
-            }}
-          />
-        </div>
-
-        {error && <ErrorLine>{error}</ErrorLine>}
-
-        <div className="flex justify-center">
-          <CapsButton
-            label={busy ? "…" : previewUrl ? "Finish" : "Skip"}
-            variant={previewUrl ? "default" : "muted"}
-            disabled={busy}
-            onClick={onFinish}
-          />
-        </div>
-      </div>
     </Shell>
   );
 }

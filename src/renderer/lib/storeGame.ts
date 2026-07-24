@@ -44,6 +44,7 @@ export function gameListItemToGame(g: GameListItem): Game {
     dateAddedToLibrary: g.dateAddedToLibrary,
     screenshots: shots,
     description: g.description,
+    specialInstructions: g.specialInstructions,
     systemRequirements: undefined,
     sizeBytes: g.sizeBytes,
     /** Same as catalogEntryToGame — list hydration must keep install URLs or InstallModal breaks. */

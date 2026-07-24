@@ -1,5 +1,15 @@
 import { SettingsService } from "./settings.service";
 
+/** Defense in depth for any call that carries a setup code or bearer token. */
+export function assertSecureServerUrl(raw: string): string {
+  const url = new URL(raw);
+  const loopback = ["localhost", "127.0.0.1", "::1", "[::1]"].includes(url.hostname);
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
+    throw new Error("This server uses unencrypted HTTP. Use HTTPS before signing in or opening admin tools.");
+  }
+  return raw.replace(/\/$/, "");
+}
+
 /** First enabled library source — same base URL used for catalog and `/api/auth/login`. */
 export function getEnabledLibraryBaseUrl(): string {
   const svc = new SettingsService();

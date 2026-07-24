@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useStoreGames } from "../hooks/useStoreGames";
 import { useServerStatus } from "../hooks/useServerStatus";
@@ -7,6 +7,10 @@ import { PageShell } from "../components/layout/PageShell";
 import { UnknownErrorPanel } from "../components/errors/UnknownErrorPanel";
 import { HoloStoreCard } from "../components/store/HoloStoreCard";
 import { StoreSearch } from "../components/store/StoreSearch";
+import { resolveStoreCoverImage } from "../lib/storeGame";
+import { platformLabel } from "../lib/platformIcons";
+import { cn } from "../lib/cn";
+import type { Platform } from "@shared/schemas";
 import {
   STORE_CARD_GAP_PX,
   STORE_CARD_WIDTH_PX,
@@ -16,14 +20,15 @@ import { useAuthStore } from "../store/auth.store";
 import { send } from "../lib/ipc";
 import arrowPrev from "../assets/icons/arrow-prev-svgrepo-com.svg";
 import arrowNext from "../assets/icons/arrow-forward-svgrepo-com.svg";
+import { useStoreUpdateStore } from "../store/storeUpdate.store";
 
 const CARD_W = STORE_CARD_WIDTH_PX;
 const CARD_GAP = STORE_CARD_GAP_PX;
 const HALF_TRACK = `calc(50% - ${CARD_W / 2}px)`;
 /** Ignore scroll-sync while arrow-driven smooth scroll finishes */
 const PROGRAMMATIC_SCROLL_MS = 850;
-/** Let smooth scroll finish before route change (double-click open). */
-const NAVIGATE_AFTER_CENTER_MS = 480;
+/** Let the pick pulse land before route change (double-click open). */
+const NAVIGATE_AFTER_CENTER_MS = 280;
 
 function inferErrorCode(err: unknown): AppErrorCode {
   const msg = err instanceof Error ? err.message : String(err);
@@ -128,7 +133,7 @@ function StoreEmpty() {
   );
 }
 
-function Carousel({ games }: { games: Game[] }) {
+function Carousel({ games, controls }: { games: Game[]; controls?: ReactNode }) {
   const N = games.length;
   const navigate = useNavigate();
   const setPreviewGame = useGamePreviewStore((s) => s.set);
@@ -255,34 +260,54 @@ function Carousel({ games }: { games: Game[] }) {
     [scrollToVirtual, scheduleNormalize],
   );
 
-  const title = games[realIdx]?.title ?? "";
+  const centered = games[realIdx];
+  const title = centered?.title ?? "";
+  const backdrop = centered ? resolveStoreCoverImage(centered) : undefined;
 
   return (
-    <div className="flex w-full flex-col gap-5">
-      <div className="flex w-full items-center gap-4">
-        <div className="h-14 w-14 shrink-0" aria-hidden />
-        <div className="flex min-h-[2.75rem] min-w-0 flex-1 items-center justify-center">
+    <div className="flex w-full flex-col gap-4">
+      {/* Header: filter dropdown left, title center, search right */}
+      <div className="grid w-full grid-cols-[1fr_auto_1fr] items-center gap-4">
+        <div className="justify-self-start">{controls}</div>
+        <div className="flex min-h-[2.75rem] min-w-0 items-center justify-center">
           <h2
             key={realIdx}
             title={title}
-            className="font-title max-w-full select-none truncate px-2 text-center text-[clamp(1.6rem,3.5vw,2.8rem)] leading-none tracking-[0.1em] text-white/95"
+            className="font-title max-w-[46vw] select-none truncate px-2 text-center text-[clamp(1.6rem,3.5vw,2.8rem)] leading-none tracking-[0.1em] text-white/95"
             style={{
-              animation: "fadeSlideIn 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94) both",
+              animation: "storeTitleIn 0.45s cubic-bezier(0.22, 1, 0.36, 1) both",
               textShadow: "0 1px 0 rgba(0,0,0,0.45), 0 8px 28px rgba(0,0,0,0.35)",
             }}
           >
             {title}
           </h2>
         </div>
-        <StoreSearch games={games} />
+        <div className="justify-self-end">
+          <StoreSearch games={games} />
+        </div>
       </div>
 
-      <div className="flex w-full items-center gap-4" style={{ perspective: "1200px" }}>
+      <div className="relative flex w-full items-center gap-4">
+        {/* Ambient art glow — anchored behind the card row only, masked so it has no edges */}
+        {backdrop && (
+          <div className="pointer-events-none absolute inset-0 -z-10 flex items-center justify-center">
+            <img
+              key={centered?.id}
+              src={backdrop}
+              alt=""
+              aria-hidden
+              draggable={false}
+              className="store-backdrop h-[115%] w-[640px] max-w-none rounded-full object-cover"
+            />
+          </div>
+        )}
         <ArrowBtn src={arrowPrev} onClick={() => scrollDir(-1)} />
 
+        {/* One perspective on the scroller = one shared vanishing point for every card.
+            The mask fades edge cards out instead of hard-clipping them at the boundary. */}
         <div
           ref={outerRef}
-          className="min-w-0 flex-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          className="store-track-mask min-w-0 flex-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           style={{
             scrollSnapType: "x proximity",
             scrollPaddingInline: HALF_TRACK,
@@ -290,8 +315,9 @@ function Carousel({ games }: { games: Game[] }) {
             overscrollBehaviorX: "contain",
           }}
         >
+          {/* Vertical padding: room for the lift/tilt above and the reflections below */}
           <div
-            className="flex items-center py-16"
+            className="flex items-center pt-12 pb-28"
             style={{
               paddingInline: HALF_TRACK,
               gap: `${CARD_GAP}px`,
@@ -299,19 +325,13 @@ function Carousel({ games }: { games: Game[] }) {
             }}
           >
             {displayGames.map((g, di) => {
-              const ri = di % N;
-              // Circular distance so cards on both sides of center dim symmetrically
-              const raw = (ri - realIdx + N) % N;
-              const distance = raw > N / 2 ? N - raw : raw;
-              // Only the card at the current scroll index is "selected" — not every duplicate copy
-              // of the same game (tripled list would otherwise highlight 3 cards at once).
-              const isFocused = di === virtualIdx;
+              // Signed row position: side cards angle toward the center (cover-flow).
+              const offset = Math.max(-2, Math.min(2, di - virtualIdx));
               return (
                 <HoloStoreCard
                   key={di}
                   game={g}
-                  isSelected={isFocused}
-                  distance={distance}
+                  offset={offset}
                   onCenter={() => centerToVirtual(di)}
                   onNavigate={(rect) => {
                     // Center the exact card that was double-clicked (display index), not a “nearest” duplicate
@@ -338,9 +358,159 @@ function Carousel({ games }: { games: Game[] }) {
   );
 }
 
+type Selection = { kind: "all" } | { kind: "newest" } | { kind: "platform"; platform: Platform };
+
+/** Compact filter menu: all games, recent catalog updates, or one platform. */
+function StoreControls({
+  selection,
+  onSelect,
+  platforms,
+}: {
+  selection: Selection;
+  onSelect: (s: Selection) => void;
+  platforms: Platform[];
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  const currentLabel =
+    selection.kind === "all"
+      ? "All games"
+      : selection.kind === "newest"
+        ? "Recently added"
+        : platformLabel(selection.platform);
+
+  const options: { key: string; label: string; sel: Selection }[] = [
+    { key: "all", label: "All games", sel: { kind: "all" } },
+    { key: "newest", label: "Recently added", sel: { kind: "newest" } },
+    ...platforms.map((p) => ({
+      key: p,
+      label: platformLabel(p),
+      sel: { kind: "platform", platform: p } as Selection,
+    })),
+  ];
+
+  const isActive = (o: Selection) =>
+    o.kind === selection.kind &&
+    (o.kind !== "platform" || o.platform === (selection as { platform?: Platform }).platform);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className={cn(
+          "flex items-center gap-2 border-b px-0 py-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] transition-colors",
+          open ? "border-white/60 text-white" : "border-white/10 text-[#909090] hover:border-white/30 hover:text-white",
+        )}
+      >
+        {currentLabel}
+        <svg
+          width="10"
+          height="10"
+          viewBox="0 0 10 10"
+          className={cn("shrink-0 transition-transform duration-200", open && "rotate-180")}
+        >
+          <path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" strokeWidth="1.4" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="store-menu absolute left-0 top-[calc(100%+6px)] z-[300] min-w-[176px] border-y border-white/[0.09] bg-[#0c0c11]/98 py-1">
+          {options.map((o, i) => {
+            const active = isActive(o.sel);
+            return (
+              <div key={o.key}>
+                {i === 2 && <div className="my-1 h-px bg-white/[0.06]" />}
+                <button
+                  type="button"
+                  onClick={() => {
+                    onSelect(o.sel);
+                    setOpen(false);
+                  }}
+                  className={cn(
+                    "flex w-full items-center gap-2 border-b border-white/[0.04] px-1 py-2 text-left text-[11px] uppercase tracking-[0.08em] transition-colors last:border-b-0",
+                    active ? "text-white" : "text-[#777] hover:text-[#bbb]",
+                  )}
+                >
+                  <span className="flex-1">{o.label}</span>
+                  {active && (
+                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-white/80" aria-hidden />
+                  )}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function StorePage() {
   const server = useServerStatus();
   const { games, isLoading, isError, error, isEmpty, refetch: refetchGames } = useStoreGames();
+  const [selection, setSelection] = useState<Selection>({ kind: "all" });
+  const hasStoreUpdate = useStoreUpdateStore((state) => state.hasUpdate);
+  const clearStoreUpdate = useStoreUpdateStore((state) => state.clearUpdate);
+
+  useEffect(() => {
+    if (hasStoreUpdate) clearStoreUpdate();
+  }, [hasStoreUpdate, clearStoreUpdate]);
+
+  // Platforms present in the catalog, biggest shelf first.
+  const platforms = useMemo(() => {
+    const counts = new Map<Platform, number>();
+    for (const g of games) if (g.platform) counts.set(g.platform, (counts.get(g.platform) ?? 0) + 1);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([p]) => p);
+  }, [games]);
+
+  useEffect(() => {
+    if (
+      selection.kind === "platform" &&
+      !platforms.includes(selection.platform)
+    ) {
+      setSelection({ kind: "all" });
+    }
+  }, [platforms, selection]);
+
+  const displayed = useMemo(() => {
+    if (selection.kind === "platform") {
+      return games.filter((g) => g.platform === selection.platform);
+    }
+    if (selection.kind === "newest") {
+      const dated = games
+        .map((game) => ({
+          game,
+          addedAt: game.dateAddedToLibrary
+            ? new Date(game.dateAddedToLibrary).getTime()
+            : Number.NaN,
+        }))
+        .filter((entry) => Number.isFinite(entry.addedAt))
+        .sort((a, b) => b.addedAt - a.addedAt);
+      if (dated.length === 0) return games;
+      const recentCutoff = dated[0].addedAt - 30 * 24 * 60 * 60 * 1000;
+      return dated
+        .filter((entry) => entry.addedAt >= recentCutoff)
+        .map((entry) => entry.game);
+    }
+    return [...games].sort((a, b) =>
+      a.title.localeCompare(b.title, undefined, { sensitivity: 'base', numeric: true }),
+    );
+  }, [games, selection]);
+
+  const selKey =
+    selection.kind === "platform" ? `platform-${selection.platform}` : selection.kind;
 
   const serverDown = !server.isLoading && server.data != null && !server.data.online;
   const serverOnline = server.data?.online === true;
@@ -389,13 +559,19 @@ export function StorePage() {
 
   return (
     <PageShell>
-      <div className="relative flex min-h-0 flex-1 flex-col items-center justify-center">
+      <div className="relative flex min-h-0 flex-1 flex-col items-center justify-center gap-6">
         {isLoading ? (
           <p className="text-[12px] text-[#555]">Loading…</p>
         ) : isEmpty ? (
           <StoreEmpty />
         ) : (
-          <Carousel games={games} />
+          <Carousel
+            key={selKey}
+            games={displayed}
+            controls={
+              <StoreControls selection={selection} onSelect={setSelection} platforms={platforms} />
+            }
+          />
         )}
       </div>
     </PageShell>

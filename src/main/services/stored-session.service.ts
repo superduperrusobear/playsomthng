@@ -18,12 +18,21 @@ function legacyPath(): string {
 }
 
 export async function loadStoredSession(): Promise<StoredUserSession | null> {
+  if (!safeStorage.isEncryptionAvailable()) {
+    // A session token is a credential. Never reopen a plaintext fallback.
+    await fs.unlink(sessionPath()).catch(() => {});
+    await fs.unlink(legacyPath()).catch(() => {});
+    logger.warn("[SESSION] Secure OS storage unavailable; removed plaintext session state");
+    return null;
+  }
   try {
     const buf = await fs.readFile(sessionPath());
-    const raw = safeStorage.isEncryptionAvailable()
-      ? safeStorage.decryptString(buf)
-      : buf.toString("utf8");
-    return StoredUserSessionSchema.parse(JSON.parse(raw));
+    const raw = safeStorage.decryptString(buf);
+    const session = StoredUserSessionSchema.parse(JSON.parse(raw));
+    // Rewrite the parsed shape so removed profile fields are purged from an
+    // older encrypted session snapshot.
+    await saveStoredSession(session);
+    return session;
   } catch {
     /* fall through to legacy */
   }
@@ -44,12 +53,11 @@ export async function saveStoredSession(session: StoredUserSession): Promise<voi
   const { dataDir } = getAppPaths();
   await fs.mkdir(dataDir, { recursive: true });
   const json = JSON.stringify(StoredUserSessionSchema.parse(session));
-  if (safeStorage.isEncryptionAvailable()) {
-    await fs.writeFile(sessionPath(), safeStorage.encryptString(json));
-  } else {
-    logger.warn("[SESSION] OS encryption unavailable; storing session with file permissions only");
-    await fs.writeFile(sessionPath(), json, { mode: 0o600 });
+  if (!safeStorage.isEncryptionAvailable()) {
+    await fs.unlink(sessionPath()).catch(() => {});
+    throw new Error("Secure OS storage is required to remember this session");
   }
+  await fs.writeFile(sessionPath(), safeStorage.encryptString(json));
 }
 
 export async function clearStoredSession(): Promise<void> {

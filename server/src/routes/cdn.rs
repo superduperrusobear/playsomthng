@@ -15,8 +15,8 @@ use crate::auth;
 use crate::download_governor::{BusyKind, StreamWithPermits, retry_after_seconds};
 use crate::state::AppState;
 
-/// Gate a download: valid bearer session, and (non-admin) the `X-Hardware-Uuid`
-/// header must match the machine bound to this session at login.
+/// Gate a download: valid bearer session and the `X-Hardware-Uuid` header must
+/// match the machine bound to this session at login. Admins are not exempt.
 ///
 /// The hardware id travels in the header only — never in the query string —
 /// so it does not leak into reverse-proxy / CDN access logs.
@@ -24,7 +24,7 @@ async fn require_download_access(
     headers: &HeaderMap,
     state: &AppState,
     game_id: &str,
-) -> Result<String, Response> {
+) -> Result<(String, String), Response> {
     match check_download_access(headers, state).await {
         Ok(user_id) => Ok(user_id),
         Err((code, res)) => {
@@ -46,7 +46,7 @@ async fn require_download_access(
 async fn check_download_access(
     headers: &HeaderMap,
     state: &AppState,
-) -> Result<String, (&'static str, Response)> {
+) -> Result<(String, String), (&'static str, Response)> {
     let token = auth::bearer_token(headers).ok_or_else(|| {
         (
             "no_token",
@@ -60,7 +60,9 @@ async fn check_download_access(
 
     let entry = {
         let sessions = state.auth_sessions.lock().await;
-        sessions.get(&auth::token_key(&token)).cloned().ok_or_else(|| {
+        sessions.get(&auth::token_key(&token))
+            .filter(|s| auth::session_device_is_valid(&state.data_dir, &state.hw_salt, s))
+            .cloned().ok_or_else(|| {
             (
                 "bad_session",
                 json_err(
@@ -88,11 +90,6 @@ async fn check_download_access(
                 ),
             ));
         }
-    }
-
-    let role = auth::user_role_for_id(&state.data_dir, &user_id).unwrap_or_default();
-    if role == "admin" {
-        return Ok(user_id);
     }
 
     let hw_raw = headers
@@ -159,14 +156,20 @@ async fn check_download_access(
         })?;
     verify_download_auth(headers, state, &pub_key).await?;
 
-    Ok(user_id)
+    Ok((user_id, hw_hash))
 }
 
 const DOWNLOAD_AUTH_WINDOW_SECS: i64 = 120;
 const AUDIT_DEDUPE_SECS: u64 = 600;
 
 /// One audit line per user+game per window — an install is one entry, not thousands.
-async fn audit_download(state: &AppState, headers: &HeaderMap, user_id: &str, game_id: &str) {
+async fn audit_download(
+    state: &AppState,
+    headers: &HeaderMap,
+    user_id: &str,
+    hw_hash: &str,
+    game_id: &str,
+) {
     let key = format!("{user_id}:{game_id}");
     {
         let mut recent = state.audit_recent.lock().await;
@@ -177,6 +180,17 @@ async fn audit_download(state: &AppState, headers: &HeaderMap, user_id: &str, ga
         }
         recent.insert(key, now);
     }
+    {
+        let _guard = state.auth_mutex.lock().await;
+        if let Err(err) = auth::mark_device_download(
+            &state.data_dir,
+            &state.hw_salt,
+            user_id,
+            hw_hash,
+        ) {
+            tracing::warn!(%err, "could not update device download activity");
+        }
+    }
     crate::audit::log(
         &state.data_dir,
         "download",
@@ -184,6 +198,7 @@ async fn audit_download(state: &AppState, headers: &HeaderMap, user_id: &str, ga
             "user": crate::auth::username_for_id(&state.data_dir, user_id).unwrap_or_else(|| user_id.to_string()),
             "game": game_id,
             "ip": crate::audit::client_ip(headers),
+            "device": &hw_hash[..12.min(hw_hash.len())],
         }),
     );
 }
@@ -411,8 +426,8 @@ pub async fn get_manifest_file(
             .into_response());
     }
 
-    let user_id = require_download_access(&headers, &state, &id).await?;
-    audit_download(&state, &headers, &user_id, &id).await;
+    let (user_id, hw_hash) = require_download_access(&headers, &state, &id).await?;
+    audit_download(&state, &headers, &user_id, &hw_hash, &id).await;
     let permits = match state.download_governor.try_acquire(&user_id).await {
         Ok(p) => p,
         Err(kind) => return Err(busy_denied(&state, &headers, &user_id, &id, kind).await),
@@ -451,8 +466,8 @@ pub async fn get_local_file(
             .into_response());
     }
 
-    let user_id = require_download_access(&headers, &state, &id).await?;
-    audit_download(&state, &headers, &user_id, &id).await;
+    let (user_id, hw_hash) = require_download_access(&headers, &state, &id).await?;
+    audit_download(&state, &headers, &user_id, &hw_hash, &id).await;
     let permits = match state.download_governor.try_acquire(&user_id).await {
         Ok(p) => p,
         Err(kind) => return Err(busy_denied(&state, &headers, &user_id, &id, kind).await),
@@ -513,30 +528,50 @@ pub async fn get_local_file(
         }
     }
 
-    if !full.starts_with(&game_root) {
-        drop(permits);
-        return Err(StatusCode::FORBIDDEN.into_response());
-    }
-    
-    tracing::info!("cdn requested: uri_rest={} resolved_path={}", rest, full.display());
-    
-    let meta = match tokio::fs::metadata(&full).await {
-        Ok(m) => m,
+    // Canonicalize both the game root and the resolved file before the
+    // starts_with containment check. A symlink placed under the game folder
+    // could otherwise point outside `game_root` and bypass the containment guard.
+    let canon_root = match tokio::fs::canonicalize(&game_root).await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(root = %game_root.display(), err = %e, "cdn: could not canonicalize game_root");
+            drop(permits);
+            return Err(StatusCode::NOT_FOUND.into_response());
+        }
+    };
+    let canon_full = match tokio::fs::canonicalize(&full).await {
+        Ok(p) => p,
         Err(e) => {
             tracing::warn!(path = %full.display(), err = %e, "cdn 404 file not found");
             drop(permits);
             return Err(StatusCode::NOT_FOUND.into_response());
         }
     };
+    if !canon_full.starts_with(&canon_root) {
+        // Symlink or traversal escaped the game folder — refuse without leaking.
+        drop(permits);
+        return Err(StatusCode::FORBIDDEN.into_response());
+    }
+
+    tracing::debug!(id = %id, "cdn requested");
+
+    let meta = match tokio::fs::metadata(&canon_full).await {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(err = %e, "cdn 404 file not found");
+            drop(permits);
+            return Err(StatusCode::NOT_FOUND.into_response());
+        }
+    };
     if meta.is_dir() {
-        tracing::warn!(path = %full.display(), "cdn 404 is a directory");
+        tracing::warn!("cdn 404 is a directory");
         drop(permits);
         return Err(StatusCode::NOT_FOUND.into_response());
     }
-    let mut file = match File::open(&full).await {
+    let mut file = match File::open(&canon_full).await {
         Ok(f) => f,
         Err(e) => {
-            tracing::warn!(path = %full.display(), err = %e, "cdn 404 failed to open");
+            tracing::warn!(err = %e, "cdn 404 failed to open");
             drop(permits);
             return Err(StatusCode::NOT_FOUND.into_response());
         }
@@ -565,7 +600,7 @@ pub async fn get_local_file(
 
     if start > 0 {
         if let Err(e) = file.seek(SeekFrom::Start(start)).await {
-            tracing::warn!(path = %full.display(), err = %e, "cdn seek failed");
+            tracing::warn!(err = %e, "cdn seek failed");
             drop(permits);
             return Err(StatusCode::INTERNAL_SERVER_ERROR.into_response());
         }

@@ -28,6 +28,8 @@ export const CatalogGameRawSchema = z.object({
   specialInstructions: z.string().optional(),
   /** Store visibility — only sent on the admin catalog route. */
   publishState: z.enum(["published", "draft"]).optional(),
+  /** Unix timestamp when the admin imported this title (seconds or milliseconds). */
+  addedAt: z.number().optional(),
 });
 
 export type CatalogGameRaw = z.infer<typeof CatalogGameRawSchema>;
@@ -76,6 +78,13 @@ function emulatorFromCatalog(raw: CatalogGameRaw): Game["emulator"] {
   return { required: false };
 }
 
+export function catalogAddedAtIso(value: number | undefined): string | undefined {
+  if (value == null || !Number.isFinite(value) || value <= 0) return undefined;
+  const milliseconds = value < 10_000_000_000 ? value * 1000 : value;
+  const date = new Date(milliseconds);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
 /** Full `Game` for carousel + detail (catalog-backed). */
 export function catalogEntryToGame(raw: CatalogGameRaw): Game {
   const slug = raw.id;
@@ -106,6 +115,8 @@ export function catalogEntryToGame(raw: CatalogGameRaw): Game {
     developer: raw.developer?.trim() || undefined,
     publisher: raw.publisher?.trim() || undefined,
     releaseDate: raw.releaseDate?.trim() || undefined,
+    specialInstructions: raw.specialInstructions?.trim() || undefined,
+    dateAddedToLibrary: catalogAddedAtIso(raw.addedAt),
   };
 }
 
@@ -129,6 +140,7 @@ export function catalogEntryToGameListItem(raw: CatalogGameRaw): GameListItem {
     sizeBytes: raw.size,
     manifestUrl: raw.manifestUrl,
     downloadBaseUrl: raw.downloadBaseUrl,
+    ...(g.specialInstructions ? { specialInstructions: g.specialInstructions } : {}),
     ...(raw.publishState ? { publishState: raw.publishState } : {}),
   };
 }

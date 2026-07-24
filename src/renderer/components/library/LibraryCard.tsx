@@ -87,54 +87,63 @@ export function LibraryCard({ game, hideHoverOverlay = false }: LibraryCardProps
         ref={cardRef}
         onClick={handleClick}
         className={cn(
-          "group relative cursor-pointer overflow-hidden rounded-xl bg-[#111] transition-all duration-200",
-          "border border-[#1e1e1e]/90 hover:border-[#3a3a3a]/80",
-          isInstalled && "hover:border-[#3a67f0]/45",
-          "hover:-translate-y-0.5",
-          "card-shadow-smudge",
+          "group relative aspect-[3/4] cursor-pointer overflow-hidden rounded-xl bg-[#121214]",
+          "border transition-[transform,border-color,box-shadow] duration-300 will-change-transform",
+          "border-white/[0.07] hover:-translate-y-1 hover:border-white/20",
+          "shadow-[0_8px_20px_-10px_rgba(0,0,0,0.6)] hover:shadow-[0_18px_36px_-14px_rgba(0,0,0,0.8)]",
         )}
       >
-        {/* Cover fills entire card */}
-        <div className="relative aspect-[3/4] w-full overflow-hidden rounded-t-xl">
+        {/* Cover art */}
+        <div className="relative h-full w-full overflow-hidden">
           {cover ? (
             <img
               src={cover}
               alt={game.title}
-              className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
+              className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.04]"
               draggable={false}
             />
           ) : (
-            <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-gradient-to-br from-[#1e1e1e] to-[#111]">
-              <span className="text-3xl font-bold text-[#2a2a2a]">{game.title[0]}</span>
+            <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-[#242428] to-[#121214]">
+              <span className="font-title text-4xl text-[#3a3a3e]">{game.title[0]}</span>
             </div>
           )}
-          <div className="card-glimmer rounded-t-xl" aria-hidden />
-        </div>
 
-        {/* Hover overlay — shows action label */}
-        {(!hideHoverOverlay || inProgress) && (
+          {/* Glass edge — same finish as the store card */}
           <div
-            className={cn(
-              "absolute inset-0 z-[2] flex flex-col items-center justify-end px-3 pb-4",
-              "bg-gradient-to-t from-black/90 via-black/20 to-transparent",
-              "opacity-0 transition-opacity duration-200 group-hover:opacity-100",
-              inProgress && "opacity-100",
-            )}
-          >
-            {inProgress ? (
-              <ProgressOverlay
-                pct={pct}
-                downloadedBytes={session?.downloadedBytes ?? 0}
-                totalBytes={session?.totalBytes ?? 0}
-                state={session?.state ?? "downloading"}
-              />
-            ) : hideHoverOverlay ? null : (
-              <span className="text-[11px] font-semibold text-white drop-shadow">
-                {isInstalled ? "Details · Play" : "Details · Install"}
-              </span>
-            )}
-          </div>
-        )}
+            aria-hidden
+            className="pointer-events-none absolute inset-0"
+            style={{
+              background:
+                "linear-gradient(160deg, rgba(255,255,255,0.07) 0%, transparent 45%, rgba(0,0,0,0.16) 100%)",
+              mixBlendMode: "overlay",
+            }}
+          />
+
+          {/* Overlay — action label on hover, or live download progress */}
+          {(!hideHoverOverlay || inProgress) && (
+            <div
+              className={cn(
+                "absolute inset-0 z-[2] flex flex-col items-center justify-end px-3 pb-4",
+                "bg-gradient-to-t from-black/90 via-black/15 to-transparent",
+                "opacity-0 transition-opacity duration-200 group-hover:opacity-100",
+                inProgress && "opacity-100",
+              )}
+            >
+              {inProgress ? (
+                <ProgressOverlay
+                  pct={pct}
+                  downloadedBytes={session?.downloadedBytes ?? 0}
+                  totalBytes={session?.totalBytes ?? 0}
+                  state={session?.state ?? "downloading"}
+                />
+              ) : hideHoverOverlay ? null : (
+                <span className="text-[11px] font-semibold uppercase tracking-[0.1em] text-white drop-shadow">
+                  {isInstalled ? "Play" : "Install"}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </>
   );

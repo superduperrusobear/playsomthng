@@ -8,6 +8,7 @@ import {
   UserSchema,
   UserPublicSchema,
   PlaytimeEntrySchema,
+  AccountSecuritySchema,
 } from "./user.schema";
 import { ServerStatusSchema } from "./server.schema";
 import { LocalSessionContextSchema } from "./local-user.schema";
@@ -38,10 +39,9 @@ export const IpcChannel = {
   /** Persisted session file (username, role, unix token times). */
   AUTH_SESSION_GET: "auth:session:get",
   AUTH_SESSION_SET: "auth:session:set",
-  /** Upload profile photo via main process (reliable session + no renderer fetch quirks). */
-  AUTH_AVATAR_UPLOAD: "auth:avatar:upload",
-  /** Enrolled machines (hardware UUIDs) for the signed-in account. */
-  AUTH_DEVICES_GET: "auth:devices:get",
+  AUTH_SECURITY_GET: "auth:security:get",
+  AUTH_DEVICE_REVOKE: "auth:device:revoke",
+  AUTH_SESSION_REVOKE: "auth:session:revoke",
 
   /** Local user library on disk (installs, pins, source own|server). */
   LOCAL_LIBRARY_GET: "local:library:get",
@@ -93,6 +93,9 @@ export const IpcChannel = {
   /** GET manifest JSON from the Rust server (or any URL) — main process fetch. */
   MANIFEST_FETCH: "manifest:fetch",
 
+
+  /** Authenticated passthrough to /api/admin/* (users, audit, keys). Admin token attached in main. */
+  ADMIN_API: "admin:api",
 
   /** Catalog metadata editor — admin CRUD via Rust server */
   CATALOG_META_GET: "catalog:meta:get",
@@ -171,11 +174,9 @@ export const IpcRequestSchema = {
   }),
   [IpcChannel.AUTH_SESSION_GET]: z.undefined(),
   [IpcChannel.AUTH_SESSION_SET]: z.union([StoredUserSessionSchema, z.null()]),
-  [IpcChannel.AUTH_AVATAR_UPLOAD]: z.object({
-    imageBase64: z.string().min(1),
-    contentType: z.string().min(1),
-  }),
-  [IpcChannel.AUTH_DEVICES_GET]: z.undefined(),
+  [IpcChannel.AUTH_SECURITY_GET]: z.undefined(),
+  [IpcChannel.AUTH_DEVICE_REVOKE]: z.object({ hwHash: z.string().min(1) }),
+  [IpcChannel.AUTH_SESSION_REVOKE]: z.object({ sessionId: z.string().min(1) }),
 
   [IpcChannel.LOCAL_LIBRARY_GET]: z.undefined(),
   [IpcChannel.LOCAL_LIBRARY_SET]: LocalLibraryFileSchema,
@@ -213,6 +214,12 @@ export const IpcRequestSchema = {
 
   [IpcChannel.MANIFEST_FETCH]: z.object({ url: z.string().url() }),
 
+
+  [IpcChannel.ADMIN_API]: z.object({
+    method: z.enum(["GET", "POST", "DELETE"]),
+    path: z.string().startsWith("/api/admin/"),
+    body: z.unknown().optional(),
+  }),
 
   [IpcChannel.CATALOG_META_GET]: z.object({ id: z.string() }),
   [IpcChannel.CATALOG_META_SET]: CatalogMetaSchema,
@@ -269,19 +276,12 @@ export const IpcResponseSchema = {
   [IpcChannel.AUTH_ME]: UserSchema,
   [IpcChannel.AUTH_SESSION_GET]: z.union([StoredUserSessionSchema, z.null()]),
   [IpcChannel.AUTH_SESSION_SET]: z.union([StoredUserSessionSchema, z.null()]),
-  [IpcChannel.AUTH_AVATAR_UPLOAD]: z.object({
-    avatarUrl: z.string().url(),
+  [IpcChannel.AUTH_SECURITY_GET]: AccountSecuritySchema,
+  [IpcChannel.AUTH_DEVICE_REVOKE]: z.object({
+    ok: z.literal(true),
+    sessionsRevoked: z.number().int().nonnegative(),
   }),
-  [IpcChannel.AUTH_DEVICES_GET]: z.object({
-    devices: z.array(
-      z.object({
-        /** Salted fingerprint — the raw SMBIOS UUID never leaves the machine unhashed on the server. */
-        hwHash: z.string(),
-        hostname: z.string(),
-        enrolledAt: z.string(),
-      }),
-    ),
-  }),
+  [IpcChannel.AUTH_SESSION_REVOKE]: z.object({ ok: z.literal(true) }),
   [IpcChannel.LOCAL_LIBRARY_GET]: LocalLibraryFileSchema,
   [IpcChannel.LOCAL_LIBRARY_SET]: LocalLibraryFileSchema,
   [IpcChannel.LOCAL_DOWNLOADS_GET]: LocalDownloadsFileSchema,
@@ -296,6 +296,7 @@ export const IpcResponseSchema = {
   [IpcChannel.SERVER_STATUS_GET]: ServerStatusSchema,
   [IpcChannel.SERVER_STATUS_PROBE]: ServerStatusSchema,
   [IpcChannel.MANIFEST_FETCH]: ManifestJsonSchema,
+  [IpcChannel.ADMIN_API]: z.unknown(),
   [IpcChannel.CATALOG_META_GET]: CatalogMetaSchema,
   [IpcChannel.CATALOG_META_SET]: CatalogMetaSchema,
   [IpcChannel.IGDB_SEARCH]: IgdbSearchResponseSchema,

@@ -72,6 +72,8 @@ export const FileDownloadEntrySchema = z.object({
   status: FileDownloadStatusSchema,
   downloadedBytes: z.number().nonnegative(),
   error: z.string().nullable(),
+  /** Optional expected content hash from the manifest (e.g. "sha256:<hex>" or bare hex). */
+  hash: z.string().optional().nullable(),
 });
 export type FileDownloadEntry = z.infer<typeof FileDownloadEntrySchema>;
 

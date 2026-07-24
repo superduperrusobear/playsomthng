@@ -1,6 +1,6 @@
 import { IpcMain } from "electron";
-import { IpcChannel, IgdbSearchResponseSchema, IgdbMetaSchema } from "../../shared/schemas";
-import { assertSessionAuthenticated, getAuthTokenForDownloads } from "./auth.handler";
+import { IpcChannel, IgdbSearchResponseSchema, IgdbMetaSchema, IpcRequestSchema } from "../../shared/schemas";
+import { assertSessionAdmin, getAuthTokenForDownloads } from "./auth.handler";
 import { SettingsService } from "../services/settings.service";
 import { debugFetch } from "../utils/network-debug";
 
@@ -19,8 +19,8 @@ function getBaseAndHeaders(): { base: string; headers: Record<string, string> } 
 export function registerIgdbHandlers(ipcMain: IpcMain) {
   /** GET /api/admin/igdb/search?q=...&limit=... */
   ipcMain.handle(IpcChannel.IGDB_SEARCH, async (_event, raw) => {
-    assertSessionAuthenticated();
-    const { q, limit } = raw as { q: string; limit?: number };
+    assertSessionAdmin();
+    const { q, limit } = IpcRequestSchema[IpcChannel.IGDB_SEARCH].parse(raw);
     const { base, headers } = getBaseAndHeaders();
     const params = new URLSearchParams({ q });
     if (limit) params.set("limit", String(limit));
@@ -35,8 +35,8 @@ export function registerIgdbHandlers(ipcMain: IpcMain) {
 
   /** GET /api/admin/igdb/game/:igdb_id */
   ipcMain.handle(IpcChannel.IGDB_FETCH_GAME, async (_event, raw) => {
-    assertSessionAuthenticated();
-    const { igdbId } = raw as { igdbId: number };
+    assertSessionAdmin();
+    const { igdbId } = IpcRequestSchema[IpcChannel.IGDB_FETCH_GAME].parse(raw);
     const { base, headers } = getBaseAndHeaders();
     const res = await debugFetch(`${base}/api/admin/igdb/game/${igdbId}`, { headers, timeoutMs: 15000 });
     if (!res.ok) {

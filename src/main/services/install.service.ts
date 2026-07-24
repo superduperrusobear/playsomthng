@@ -12,13 +12,14 @@
  */
 
 import fs from "node:fs/promises";
-import { createWriteStream } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import http from "node:http";
 import https from "node:https";
 import { BrowserWindow, shell } from "electron";
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 
 import type {
   InstallSession,
@@ -93,10 +94,7 @@ class ServerBusyError extends Error {
     readonly retryAfterSeconds: number,
     message?: string,
   ) {
-    super(
-      message ??
-        "The server is busy or another download is using your slot. Wait and try again, or cancel the other install.",
-    );
+    super(message ?? "Download queue busy");
     this.name = "ServerBusyError";
   }
 }
@@ -324,6 +322,7 @@ export async function startInstall(
     status: "pending" as const,
     downloadedBytes: 0,
     error: null,
+    hash: f.hash ?? null,
   }));
 
   const session: InstallSession = {
@@ -388,13 +387,25 @@ async function runDownload(session: InstallSession): Promise<void> {
             pushProgress(session);
           },
         );
+        // Verify hash if the manifest provided one — protects against a
+        // compromised or misconfigured download origin.
+        const expected = getExpectedHash(file);
+        if (expected) {
+          const actual = await sha256OfFile(file.localPath);
+          if (actual !== expected.value) {
+            throw new Error(
+              `Downloaded file failed integrity check (${expected.algorithm}: expected ${short(expected.value)}, got ${short(actual)}).`,
+            );
+          }
+        }
         file.status = "done";
       } catch (err) {
         if (abort.signal.aborted) break;
         file.status = "failed";
         const msg = formatDownloadFailure(err);
         file.error = msg;
-        session.error = `Failed: ${file.relativePath} — ${msg}`;
+        // Keep it short — no filename prefix, the message alone.
+        session.error = msg;
         // Stop the loop on first failure. Steam stops the download and shows an error.
         break;
       }
@@ -561,17 +572,19 @@ async function downloadFileOnce(
           res.on("end", () => {
             cleanup();
             let retryAfter = 15;
-            let msg: string | undefined;
+            let reason: string | undefined;
             try {
               const j = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
                 retryAfterSeconds?: number;
-                message?: string;
+                reason?: string;
               };
               if (typeof j.retryAfterSeconds === "number") retryAfter = j.retryAfterSeconds;
-              if (typeof j.message === "string") msg = j.message;
+              if (typeof j.reason === "string") reason = j.reason;
             } catch {
               /* use defaults */
             }
+            // Short, fixed labels — never the server's long prose.
+            const msg = reason === "user_busy" ? "Can only download one" : "Download queue busy";
             reject(new ServerBusyError(retryAfter, msg));
           });
           res.on("error", (err) => {
@@ -718,6 +731,14 @@ export async function launchGame(
   const flags = entry?.launchFlags ?? undefined;
   const shellLaunch = needsShellLaunch(paths.platformFamily, flags);
 
+  if (flags?.customFlags && !isSafeCustomFlagString(flags.customFlags)) {
+    return {
+      ok: false,
+      error:
+        "Custom launch flags contain disallowed characters (shell metacharacters are not permitted).",
+    };
+  }
+
   if (gameId) playtimeStart(gameId);
 
   const attachExit = (child: ReturnType<typeof spawn>) => {
@@ -811,7 +832,15 @@ export async function verifyInstall(gameId: string): Promise<{ ok: boolean; miss
   for (const f of session.files) {
     try {
       const stat = await fs.stat(f.localPath);
-      if (stat.size !== f.sizeBytes) mismatched += 1;
+      if (stat.size !== f.sizeBytes) {
+        mismatched += 1;
+        continue;
+      }
+      const expected = getExpectedHash(f);
+      if (expected && expected.algorithm === "sha256") {
+        const actual = await sha256OfFile(f.localPath);
+        if (actual !== expected.value) mismatched += 1;
+      }
     } catch {
       missing += 1;
     }
@@ -1080,4 +1109,57 @@ export async function pauseStaleDownloadingSessions(): Promise<void> {
 
 function unixNow(): number {
   return Math.floor(Date.now() / 1000);
+}
+
+// ── Launch flag safety ────────────────────────────────────────────────────────
+
+/**
+ * `customFlags` is appended raw to a shell command in `formatLaunchCommandPreview`.
+ * Reject any string containing shell metacharacters that could break out of the
+ * intended argv position (command chaining, redirection, subshells, quoting
+ * shenanigans, backticks, newlines, etc.). Users who need special characters
+ * must escape them via environment variables or a wrapper script.
+ */
+export function isSafeCustomFlagString(raw: string): boolean {
+  if (typeof raw !== "string") return false;
+  if (raw.length > 512) return false;
+  // Any of these can change the meaning of the assembled shell command.
+  // Note: we deliberately allow `=` (env-like flags), `-`, `_`, `.`, `/`, `:`,
+  // `@`, `+`, `,` and whitespace so common flag syntaxes still work.
+  const disallowed = /[;&|`$><\r\n\\"'()\[\]{}!*?~#]/;
+  if (disallowed.test(raw)) return false;
+  return true;
+}
+
+// ── Download integrity ────────────────────────────────────────────────────────
+
+type ExpectedHash = { algorithm: string; value: string };
+
+function short(s: string): string {
+  return s.length > 12 ? `${s.slice(0, 12)}…` : s;
+}
+
+/** Parse an optional manifest hash into a normalized {algorithm, value}. */
+function getExpectedHash(file: FileDownloadEntry): ExpectedHash | null {
+  const raw = typeof file.hash === "string" ? file.hash.trim() : null;
+  if (!raw) return null;
+  const match = raw.match(/^(sha256|sha512|sha1|md5):([a-fA-F0-9]+)$/i);
+  if (match) {
+    return { algorithm: match[1].toLowerCase(), value: match[2].toLowerCase() };
+  }
+  // Bare 64-char hex → assume sha256.
+  if (/^[a-fA-F0-9]{64}$/.test(raw)) {
+    return { algorithm: "sha256", value: raw.toLowerCase() };
+  }
+  return null;
+}
+
+async function sha256OfFile(filePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash("sha256");
+    const stream = createReadStream(filePath);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("end", () => resolve(hash.digest("hex")));
+    stream.on("error", reject);
+  });
 }

@@ -127,6 +127,8 @@ export const GameSchema = z.object({
   manifestUrl: z.string().optional(),
   /** CDN base for file downloads (catalog / server). */
   downloadBaseUrl: z.string().optional(),
+  /** Setup steps / warnings shown to the user before launch. */
+  specialInstructions: z.string().optional(),
 });
 
 // Lightweight version used in grid/list views — no heavy fields
@@ -150,6 +152,8 @@ export const GameListItemSchema = GameSchema.pick({
   coverImage: z.string().optional(),
   bannerImage: z.string().optional(),
   screenshots: z.array(z.string()).default([]),
+  /** Setup steps / warnings shown before launch. */
+  specialInstructions: z.string().optional(),
   /** Store visibility. Only present on the admin catalog route. */
   publishState: z.enum(["published", "draft"]).optional(),
 });

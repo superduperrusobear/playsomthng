@@ -91,12 +91,12 @@ Start **playsomthng-server** first (or let systemd restart it), then **Caddy**. 
 
 ```bash
 curl -sS https://test.somthng.xyz/health
-curl -sS -X POST https://test.somthng.xyz/api/auth/login \
+curl -sS -X POST https://test.somthng.xyz/api/auth/challenge \
   -H "Content-Type: application/json" \
-  -d '{"username":"test","setupKey":"","hardwareUuid":"dummy"}'
+  -d '{"username":"transport-check"}'
 ```
 
-Expect health OK; login may return JSON errors — that still proves TLS + routing work.
+Expect health OK and a one-time nonce. Do not put setup codes in shell commands or shell history.
 
 ## 6. Electron client
 

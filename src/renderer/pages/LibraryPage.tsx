@@ -162,51 +162,56 @@ export function LibraryPage() {
     return { all, installed, uninstalled, lastPlayed };
   }, [decorated, search, sort]);
 
+  const noResults = !isLoading && importedListItems.length > 0 && filtered.all.length === 0;
+
   return (
     <PageShell>
       <ResumeBanner />
 
-      {/* Top bar */}
-      <div className="flex items-center gap-3">
-        <div className="relative flex-1">
-          <svg
-            className="absolute left-3 top-1/2 -translate-y-1/2 text-[#444]"
-            width="13"
-            height="13"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-          >
-            <circle cx="11" cy="11" r="8" />
-            <path d="M21 21l-4.35-4.35" />
-          </svg>
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search your library…"
-            className="w-full rounded-lg border border-[#1e1e1e] bg-[#111] py-2 pl-9 pr-3 text-[12px] text-[#ccc] placeholder-[#444] outline-none focus:border-[#333]"
-          />
-        </div>
+      {/* Header: title + controls */}
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <h1 className="font-title text-[clamp(1.5rem,3vw,2rem)] uppercase leading-none tracking-[0.12em] text-white/95">
+          Library
+        </h1>
 
-        <button
-          onClick={() => setShowAddModal(true)}
-          className="flex items-center gap-1.5 rounded-lg border border-[#1e1e1e] bg-[#111] px-3 py-2 text-[11px] font-semibold text-[#ddd] transition hover:border-[#333] hover:text-white"
-          title="Add your own game"
-        >
-          <span className="text-[12px]">+ Add Game</span>
-        </button>
+        <div className="flex items-center gap-2.5">
+          <div className="relative">
+            <svg
+              className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#555]"
+              width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+            >
+              <circle cx="11" cy="11" r="8" />
+              <path d="M21 21l-4.35-4.35" />
+            </svg>
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search"
+              className="w-40 rounded-full border border-white/[0.08] bg-white/[0.03] py-2 pl-9 pr-3 text-[12px] text-[#ddd] placeholder-[#555] outline-none transition-[width,border-color] duration-300 focus:w-52 focus:border-white/20"
+            />
+          </div>
+
+          <SortSelect value={sort} onChange={setSort} />
+
+          <button
+            onClick={() => setShowAddModal(true)}
+            className="flex items-center gap-1.5 rounded-full border border-white/[0.09] bg-white/[0.03] px-3.5 py-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-[#bbb] transition hover:border-white/20 hover:text-white"
+            title="Add a game you already own"
+          >
+            + Add game
+          </button>
+        </div>
       </div>
 
       {/* Only a real outage warrants a banner — no server means nothing to warn about. */}
       {isError && isRemote && !isLoading && (
-        <div className="mb-3 rounded-lg border border-[#2a2a1e] bg-[#1a1a10]/60 px-3 py-2 text-[10px] text-[#7a7a4a]">
-          Can&apos;t reach the server — showing cached library
+        <div className="rounded-lg border border-[#2a2a1e] bg-[#1a1a10]/60 px-3 py-2 text-[10px] text-[#7a7a4a]">
+          Can&apos;t reach the server — showing your cached library.
         </div>
       )}
 
-      {/* Rows */}
+      {/* Shelves — no overlap: Continue, then Installed, then everything else */}
       <div className="min-h-0 flex-1 overflow-y-auto pr-1">
         {isLoading ? (
           <LibraryGridSkeleton />
@@ -214,35 +219,20 @@ export function LibraryPage() {
           <LibraryOffline />
         ) : importedListItems.length === 0 ? (
           <EmptyLibrary hasGames={false} />
+        ) : noResults ? (
+          <EmptyLibrary hasGames={true} />
         ) : (
           <>
-            <LibraryRow
-              title="INSTALLED"
-              games={filtered.installed}
-              emptyLabel="Nothing installed yet"
-              sort={sort}
-              onSortChange={setSort}
-            />
-            <LibraryRow
-              title="NOT INSTALLED"
-              games={filtered.uninstalled}
-              emptyLabel="No games here"
-              sort={sort}
-              onSortChange={setSort}
-            />
-            <LibraryRow
-              title="ALL GAMES"
-              games={filtered.all}
-              emptyLabel="No games found"
-              sort={sort}
-              onSortChange={setSort}
-            />
-            {filtered.lastPlayed.length > 0 && (
+            {filtered.lastPlayed.length > 0 && !search && (
+              <LibraryRow title="Continue" games={filtered.lastPlayed} />
+            )}
+            {filtered.installed.length > 0 && (
+              <LibraryRow title="Installed" games={filtered.installed} />
+            )}
+            {filtered.uninstalled.length > 0 && (
               <LibraryRow
-                title="LAST PLAYED"
-                games={filtered.lastPlayed}
-                emptyLabel="No play history"
-                hideSort
+                title={filtered.installed.length > 0 ? "Not installed" : "All games"}
+                games={filtered.uninstalled}
               />
             )}
           </>
@@ -366,88 +356,76 @@ function SortSelect({ value, onChange }: { value: SortKey; onChange: (v: SortKey
     <select
       value={value}
       onChange={(e) => onChange(e.target.value as SortKey)}
-      className="rounded border border-[#1e1e1e] bg-[#0f0f0f] px-2 py-1 text-[11px] text-[#ccc] outline-none focus:border-[#333]"
+      className="rounded-full border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.1em] text-[#bbb] outline-none transition-colors hover:border-white/15 focus:border-white/20"
+      title="Sort games"
     >
-      <option value="size">Size On Disk</option>
-      <option value="dateAdded">Date Added</option>
-      <option value="alpha">Alphabetical</option>
+      <option value="alpha">A–Z</option>
+      <option value="dateAdded">Newest</option>
+      <option value="size">Size</option>
     </select>
   );
 }
 
-function LibraryRow({
-  title,
-  games,
-  emptyLabel,
-  sort,
-  onSortChange,
-  hideSort = false,
-}: {
-  title: string;
-  games: DecoratedGame[];
-  emptyLabel: string;
-  sort?: SortKey;
-  onSortChange?: (v: SortKey) => void;
-  hideSort?: boolean;
-}) {
+function LibraryRow({ title, games }: { title: string; games: DecoratedGame[] }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [overflows, setOverflows] = useState(false);
 
-  const scrollBy = (dir: "left" | "right") => {
+  useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const amount = dir === "left" ? -480 : 480;
-    el.scrollBy({ left: amount, behavior: "smooth" });
+    const check = () => setOverflows(el.scrollWidth > el.clientWidth + 4);
+    check();
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [games.length]);
+
+  const scrollBy = (dir: "left" | "right") => {
+    scrollRef.current?.scrollBy({ left: dir === "left" ? -520 : 520, behavior: "smooth" });
   };
 
-  if (games.length === 0) {
-    return (
-      <div className="mt-4">
-        <div className="mb-2 flex items-center justify-between pr-1">
-          <h3 className="text-[12px] font-semibold text-[#aaa]">{title}</h3>
-        </div>
-        <p className="text-[11px] text-[#333]">{emptyLabel}</p>
-      </div>
-    );
-  }
-
   return (
-    <div className="mt-4">
-      <div className="mb-2 flex items-center justify-between pr-1">
-        <div className="flex items-center gap-2">
-          <h3 className="text-[12px] font-semibold text-[#aaa]">{title}</h3>
-          {!hideSort && onSortChange && (
-            <SortSelect value={sort ?? "alpha"} onChange={onSortChange} />
-          )}
-        </div>
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={() => scrollBy("left")}
-            className="flex h-9 w-9 items-center justify-center text-white transition hover:scale-105"
-            aria-label="Scroll left"
-          >
-            <img src={arrowPrev} alt="" className="h-5 w-5 invert opacity-90" />
-          </button>
-          <button
-            onClick={() => scrollBy("right")}
-            className="flex h-9 w-9 items-center justify-center text-white transition hover:scale-105"
-            aria-label="Scroll right"
-          >
-            <img src={arrowNext} alt="" className="h-5 w-5 invert opacity-90" />
-          </button>
-        </div>
+    <section className="mt-7 first:mt-1">
+      <div className="mb-3 flex items-center justify-between pr-1">
+        <h3 className="flex items-baseline gap-2.5 font-title text-[12px] uppercase tracking-[0.2em] text-white/80">
+          {title}
+          <span className="text-[10px] font-normal tracking-[0.1em] text-[#555]">{games.length}</span>
+        </h3>
+        {overflows && (
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => scrollBy("left")}
+              className="flex h-8 w-8 items-center justify-center rounded-full text-white/70 transition hover:bg-white/[0.06] hover:text-white active:scale-90"
+              aria-label="Scroll left"
+            >
+              <img src={arrowPrev} alt="" className="h-4 w-4 invert opacity-80" />
+            </button>
+            <button
+              onClick={() => scrollBy("right")}
+              className="flex h-8 w-8 items-center justify-center rounded-full text-white/70 transition hover:bg-white/[0.06] hover:text-white active:scale-90"
+              aria-label="Scroll right"
+            >
+              <img src={arrowNext} alt="" className="h-4 w-4 invert opacity-80" />
+            </button>
+          </div>
+        )}
       </div>
       <div
         ref={scrollRef}
-        className="flex gap-3 overflow-x-auto pb-2 pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-        style={{ scrollSnapType: "x mandatory" }}
+        className="flex gap-[clamp(0.75rem,1.2vw,1.25rem)] overflow-x-auto pb-3 pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        style={{ scrollSnapType: "x proximity" }}
       >
         {games.map((item) => (
-          <div key={item.game.id} className="w-[172px] shrink-0 scroll-snap-start">
+          <div
+            key={item.game.id}
+            className="w-[clamp(140px,13vw,190px)] shrink-0"
+            style={{ scrollSnapAlign: "start" }}
+          >
             <LibraryCard game={item.game} hideHoverOverlay />
           </div>
         ))}
       </div>
-    </div>
+    </section>
   );
 }
 

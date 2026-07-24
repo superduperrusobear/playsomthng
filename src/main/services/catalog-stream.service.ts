@@ -58,7 +58,6 @@ export function startCatalogRevisionStream(win: BrowserWindow): () => void {
 
     const url = new URL("/api/catalog/stream", source.baseUrl).toString();
     const headers: Record<string, string> = { Accept: "text/event-stream" };
-    if (source.apiKey) headers["Authorization"] = `Bearer ${source.apiKey}`;
 
     try {
       const res = await debugFetch(url, { headers, signal: abort.signal, timeoutMs: 0 });

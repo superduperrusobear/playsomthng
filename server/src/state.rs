@@ -7,15 +7,20 @@ use crate::catalog_types::CatalogSnapshot;
 use crate::config::AppConfig;
 use crate::download_governor::DownloadGovernor;
 use crate::igdb::IgdbClient;
+use crate::rate_limit::RateLimiter;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 /// Login session. `login_hardware_uuid` holds the salted hash of the machine
-/// bound at login (admin: None); the raw SMBIOS UUID is never persisted.
+/// bound at login for every role; the raw SMBIOS UUID is never persisted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthSession {
     pub user_id: String,
     pub login_hardware_uuid: Option<String>,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub expires_at: i64,
 }
 
 /// Shared server state (handlers pull what they need via `State`).
@@ -46,6 +51,10 @@ pub struct AppState {
     pub audit_recent: Arc<Mutex<HashMap<String, std::time::Instant>>>,
     /// Limits concurrent manifest/CDN streams (2 global, 1 per user).
     pub download_governor: Arc<DownloadGovernor>,
+    /// Per-IP token bucket for auth + admin routes (brute-force / enumeration defense).
+    pub auth_rate_limiter: RateLimiter,
+    /// Live SSE catalog-stream connections — capped to prevent resource exhaustion.
+    pub sse_connections: Arc<std::sync::atomic::AtomicU64>,
     /// Server process start time (for uptime reporting in /health).
     pub started_at: std::time::Instant,
 }

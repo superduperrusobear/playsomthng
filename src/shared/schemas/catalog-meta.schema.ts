@@ -78,6 +78,8 @@ export const CatalogMetaSchema = z.object({
   emulatorRequired: z.boolean(),
   emulatorOverride: z.boolean(),
   launchTarget: z.string().nullable().optional(),
+  /** Extra launch targets for multi-executable games; the user picks one at launch. */
+  launchTargets: z.array(z.string()).default([]),
   coverImageUrl: z.string().nullable().optional(),
   screenshotUrls: z.array(z.string()),
   specialInstructions: z.string().nullable().optional(),

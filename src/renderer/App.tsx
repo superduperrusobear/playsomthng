@@ -10,7 +10,6 @@ import { useAuthStore } from "./store/auth.store";
 import { SettingsLayout } from "./pages/settings/SettingsLayout";
 import { SettingsHomePage } from "./pages/settings/SettingsHomePage";
 import { SystemInfoPage } from "./pages/settings/SystemInfoPage";
-import { SettingsPlaceholderPage } from "./pages/settings/SettingsPlaceholderPage";
 import { AccountSettingsPage } from "./pages/settings/AccountSettingsPage";
 import { StorageSettingsPage } from "./pages/settings/StorageSettingsPage";
 import { AdminPage } from "./pages/settings/AdminPage";
@@ -79,7 +78,7 @@ function AppShell() {
               <Route path="storage" element={<StorageSettingsPage />} />
               <Route path="system" element={<SystemInfoPage />} />
               <Route path="server" element={<ServerSettingsPage />} />
-              <Route path="scripts" element={<SettingsPlaceholderPage />} />
+              <Route path="scripts" element={<Navigate to="/settings" replace />} />
               <Route
                 path="admin"
                 element={
@@ -126,7 +125,6 @@ export default function App() {
       username: session.username,
       role: session.role,
       createdAt: session.createdAt,
-      ...(session.avatarUrl ? { avatarUrl: session.avatarUrl } : {}),
     };
     void (async () => {
       try {
@@ -136,7 +134,7 @@ export default function App() {
         setBootstrapped(true);
       }
     })();
-  }, [sessionLoading, session?.userId, session?.token, session?.avatarUrl, setAuth]);
+  }, [sessionLoading, session?.userId, session?.token, setAuth]);
 
   if (!bootstrapped || sessionLoading || modeLoading) {
     return (

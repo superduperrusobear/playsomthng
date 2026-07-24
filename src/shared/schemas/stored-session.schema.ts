@@ -17,8 +17,6 @@ export const StoredUserSessionSchema = z.object({
   tokenExpiresAt: z.number().int(),
   /** Unix timestamp (seconds) of last successful authentication. */
   lastAuthenticatedAt: z.number().int(),
-  /** Profile photo URL on the library server (`GET /api/auth/avatars/{userId}`). */
-  avatarUrl: z.string().url().optional(),
 });
 
 export type StoredUserSession = z.infer<typeof StoredUserSessionSchema>;

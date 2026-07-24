@@ -21,6 +21,7 @@ async fn require_session(headers: &HeaderMap, state: &AppState) -> Result<String
         let sessions = state.auth_sessions.lock().await;
         sessions
             .get(&auth::token_key(&token))
+            .filter(|s| auth::session_device_is_valid(&state.data_dir, &state.hw_salt, s))
             .map(|s| s.user_id.clone())
             .ok_or((StatusCode::UNAUTHORIZED, Json(json!({ "error": "UNAUTHORIZED" }))))?
     };
@@ -81,7 +82,9 @@ pub async fn list_all_games(
     let token = auth::bearer_token(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
     let user_id = {
         let sessions = state.auth_sessions.lock().await;
-        sessions.get(&auth::token_key(&token)).map(|s| s.user_id.clone()).ok_or(StatusCode::UNAUTHORIZED)?
+        sessions.get(&auth::token_key(&token))
+            .filter(|s| auth::session_device_is_valid(&state.data_dir, &state.hw_salt, s))
+            .map(|s| s.user_id.clone()).ok_or(StatusCode::UNAUTHORIZED)?
     };
     let role = auth::user_role_for_id(&state.data_dir, &user_id).unwrap_or_default();
     if role != "admin" {
@@ -112,6 +115,9 @@ pub async fn list_all_games(
 }
 
 /// GET /games/:id - one catalog entry by slug **or** stable UUID (matches Electron `catalogSlugToStableUuid`).
+///
+/// Only returns games that are published (same filter as `list_games`), so
+/// draft / unpublished / no-meta games are not reachable by guessing an id.
 pub async fn get_game(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -127,7 +133,16 @@ pub async fn get_game(
         .iter()
         .find(|g| catalog::catalog_entry_matches_param(g, &id))
     {
-        return (StatusCode::OK, Json(catalog_game_to_json(g)));
+        // Enforce the published filter on the single-game lookup too — otherwise
+        // an authenticated user could retrieve draft / no-meta entries (and their
+        // manifest / download URLs) by guessing a slug or stable UUID.
+        let published = catalog_meta::load_meta_by_catalog_slug(&state.data_dir, &g.id)
+            .ok()
+            .flatten()
+            .is_some_and(|m| matches!(m.publish_state, PublishState::Published));
+        if published {
+            return (StatusCode::OK, Json(catalog_game_to_json(g)));
+        }
     }
 
     (

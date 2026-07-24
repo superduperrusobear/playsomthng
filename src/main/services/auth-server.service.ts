@@ -3,6 +3,7 @@ import { AuthResponseSchema, type AuthResponse, type LoginPayload } from "../../
 import { debugFetch } from "../utils/network-debug";
 import { getDeviceKey, signChallenge } from "./device-key.service";
 import { logger } from "../utils/logger";
+import { assertSecureServerUrl } from "./library-base-url";
 
 /** One-time nonce to sign. Older servers have no challenge route — returns null. */
 async function fetchChallenge(base: string, username: string): Promise<string | null> {
@@ -30,7 +31,7 @@ export async function loginViaLibraryServer(
   payload: LoginPayload,
   hardwareUuid: string | null
 ): Promise<AuthResponse> {
-  const base = baseUrl.replace(/\/$/, "");
+  const base = assertSecureServerUrl(baseUrl);
   const url = new URL("/api/auth/login", `${base}/`).toString();
 
   const { publicKeyB64 } = getDeviceKey();

@@ -208,12 +208,4 @@ impl AppConfig {
         format!("{}/cdn/{}/", base, id_slug)
     }
 
-    /// Base URL of this API host (avatars, auth callbacks). Matches `publicBaseUrl` or dev default.
-    pub fn public_api_origin(&self) -> String {
-        self.public_base_url
-            .as_deref()
-            .unwrap_or("http://127.0.0.1:3000")
-            .trim_end_matches('/')
-            .to_string()
-    }
 }

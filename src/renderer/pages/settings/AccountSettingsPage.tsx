@@ -1,198 +1,292 @@
-import { useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Clock3, Download, Laptop, LogOut, Monitor, Trash2 } from "lucide-react";
+import { IpcChannel, type AccountSecurity } from "@shared/schemas";
+import { SettingsSection, SettingsSurface } from "../../components/layout/SettingsPanel";
+import { useLibrary } from "../../hooks/useLibrary";
+import { usePlaytime } from "../../hooks/usePlaytime";
+import { invoke } from "../../lib/ipc";
 import { useAuthStore } from "../../store/auth.store";
 import { SettingsBackLink } from "./SettingsBackLink";
-import { SettingsSection, SettingsSurface } from "../../components/layout/SettingsPanel";
-import { usePlaytime } from "../../hooks/usePlaytime";
-import { useLibrary } from "../../hooks/useLibrary";
-import { invoke } from "../../lib/ipc";
-import { IpcChannel, type StoredUserSession } from "@shared/schemas";
 
-async function fileToBase64(file: File): Promise<string> {
-  const buf = await file.arrayBuffer();
-  const bytes = new Uint8Array(buf);
-  const chunk = 0x8000;
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
+function shortId(value: string): string {
+  return value.length <= 14 ? value : `${value.slice(0, 8)}…${value.slice(-4)}`;
 }
 
-function shortHw(id: string): string {
-  if (id.length <= 12) return id;
-  return `${id.slice(0, 8)}…${id.slice(-4)}`;
+function formatWhen(value: string | number | null | undefined): string {
+  if (value == null || value === "" || value === 0) return "Never";
+  const date = new Date(typeof value === "number" ? value * 1000 : value);
+  if (Number.isNaN(date.getTime())) return "Never";
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function SectionTitle({ children, count }: { children: string; count?: number }) {
+  return (
+    <div className="flex items-baseline justify-between gap-4">
+      <h2 className="font-title text-[13px] uppercase tracking-[0.16em] text-white/80">{children}</h2>
+      {count != null && <span className="text-[10px] tabular-nums text-[#555]">{count}</span>}
+    </div>
+  );
+}
+
+function TextAction({
+  children,
+  disabled,
+  onClick,
+}: {
+  children: React.ReactNode;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className="text-[10px] font-semibold uppercase tracking-[0.11em] text-[#a96868] outline-none transition hover:text-[#e29a9a] focus-visible:text-[#e29a9a] disabled:cursor-not-allowed disabled:opacity-35"
+    >
+      {children}
+    </button>
+  );
 }
 
 export function AccountSettingsPage() {
-  const user = useAuthStore((s) => s.user);
-  const token = useAuthStore((s) => s.token);
-  const patchUser = useAuthStore((s) => s.patchUser);
+  const user = useAuthStore((state) => state.user);
+  const queryClient = useQueryClient();
+  const [actionError, setActionError] = useState<string | null>(null);
   const { data: playtime } = usePlaytime();
   const { data: library } = useLibrary();
 
-  const { data: devicesData, error: devicesError } = useQuery({
-    queryKey: ["authDevices"],
-    queryFn: () =>
-      invoke<{ devices: { hwHash: string; hostname: string; enrolledAt: string }[] }>(
-        IpcChannel.AUTH_DEVICES_GET,
-      ),
-    staleTime: 60_000,
+  const security = useQuery({
+    queryKey: ["accountSecurity"],
+    queryFn: () => invoke<AccountSecurity>(IpcChannel.AUTH_SECURITY_GET),
+    staleTime: 30_000,
     retry: 1,
   });
 
+  const refreshSecurity = () =>
+    queryClient.invalidateQueries({ queryKey: ["accountSecurity"] });
+
+  const removeDevice = useMutation({
+    mutationFn: (hwHash: string) => invoke(IpcChannel.AUTH_DEVICE_REVOKE, { hwHash }),
+    onSuccess: () => {
+      setActionError(null);
+      void refreshSecurity();
+    },
+    onError: (error) =>
+      setActionError(error instanceof Error ? error.message : "Could not remove device."),
+  });
+
+  const revokeSession = useMutation({
+    mutationFn: (sessionId: string) =>
+      invoke(IpcChannel.AUTH_SESSION_REVOKE, { sessionId }),
+    onSuccess: () => {
+      setActionError(null);
+      void refreshSecurity();
+    },
+    onError: (error) =>
+      setActionError(error instanceof Error ? error.message : "Could not sign out session."),
+  });
+
   const titleById = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const g of library?.games ?? []) m.set(g.id, g.title);
-    return m;
+    const titles = new Map<string, string>();
+    for (const game of library?.games ?? []) titles.set(game.id, game.title);
+    return titles;
   }, [library]);
 
   const topPlayed = useMemo(() => {
-    const entries = [...(playtime ?? [])].sort((a, b) => b.totalMinutes - a.totalMinutes).slice(0, 5);
-    const max = Math.max(1, ...entries.map((e) => e.totalMinutes));
-    return entries.map((e) => ({
-      ...e,
-      title: titleById.get(e.gameId) ?? "Unknown game",
-      pct: e.totalMinutes / max,
+    const entries = [...(playtime ?? [])]
+      .sort((a, b) => b.totalMinutes - a.totalMinutes)
+      .slice(0, 4);
+    const max = Math.max(1, ...entries.map((entry) => entry.totalMinutes));
+    return entries.map((entry) => ({
+      ...entry,
+      title: titleById.get(entry.gameId) ?? "Unknown game",
+      percentage: entry.totalMinutes / max,
     }));
   }, [playtime, titleById]);
 
-  const fileRef = useRef<HTMLInputElement>(null);
-  const [uploading, setUploading] = useState(false);
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const [imgTick, setImgTick] = useState(0);
+  const devices = security.data?.devices ?? [];
+  const sessions = security.data?.sessions ?? [];
 
-  const onPickPhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file || !token) return;
-    setUploading(true);
-    setUploadError(null);
-    try {
-      const imageBase64 = await fileToBase64(file);
-      const contentType = file.type || "image/jpeg";
-      const { avatarUrl } = await invoke<{ avatarUrl: string }>(IpcChannel.AUTH_AVATAR_UPLOAD, {
-        imageBase64,
-        contentType,
-      });
-      patchUser({ avatarUrl });
-      setImgTick((t) => t + 1);
-
-      const session = await invoke<StoredUserSession | null>(IpcChannel.AUTH_SESSION_GET);
-      if (session) {
-        await invoke(IpcChannel.AUTH_SESSION_SET, { ...session, avatarUrl });
-      }
-    } catch (err) {
-      setUploadError(err instanceof Error ? err.message : "Could not upload photo.");
-    } finally {
-      setUploading(false);
+  const confirmRemoveDevice = (hostname: string, hwHash: string) => {
+    setActionError(null);
+    if (
+      window.confirm(
+        `Remove ${hostname || "this device"}? It will be signed out and will need a new setup key.`,
+      )
+    ) {
+      removeDevice.mutate(hwHash);
     }
   };
 
-  const avatarSrc =
-    user?.avatarUrl != null && user.avatarUrl !== ""
-      ? `${user.avatarUrl}${user.avatarUrl.includes("?") ? "&" : "?"}t=${imgTick}`
-      : null;
-
-  const devices = devicesData?.devices ?? [];
-
   return (
-    <div className="min-h-0 flex-1 space-y-0 overflow-y-auto">
+    <div className="min-h-0 flex-1 overflow-y-auto">
       <SettingsBackLink />
-      <SettingsSurface>
-        <SettingsSection>
-          <h1 className="font-title text-[clamp(1.5rem,3vw,2rem)] tracking-[0.12em] text-white/95 uppercase">
-            Account
+      <SettingsSurface className="pb-10">
+        <SettingsSection className="py-8">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#667b68]">Account</p>
+          <h1 className="mt-2 font-title text-[clamp(1.8rem,4vw,2.7rem)] uppercase tracking-[0.1em] text-white/95">
+            {user?.username ?? "Account"}
           </h1>
+          <p className="mt-2 text-[11px] text-[#666]">Joined {formatWhen(user?.createdAt)}</p>
+        </SettingsSection>
 
-          <div className="mt-10 flex flex-col gap-14 lg:flex-row lg:items-start lg:gap-16">
-            <div className="flex flex-col items-start gap-4">
-              <div className="relative h-28 w-28 shrink-0 overflow-hidden rounded-2xl border border-white/10 bg-[#141414] shadow-[0_12px_40px_rgba(0,0,0,0.55)]">
-                {avatarSrc ? (
-                  <img
-                    key={`${avatarSrc}-${imgTick}`}
-                    src={avatarSrc}
-                    alt=""
-                    className="h-full w-full object-cover"
-                    draggable={false}
-                  />
-                ) : (
-                  <div className="flex h-full w-full items-center justify-center font-title text-[3rem] leading-none text-white/20">
-                    {(user?.username ?? "?").slice(0, 1).toUpperCase()}
+        <SettingsSection className="py-7">
+          <SectionTitle count={sessions.length}>Signed-in sessions</SectionTitle>
+
+          {security.isLoading && <p className="mt-5 text-[11px] text-[#666]">Loading…</p>}
+          {security.error != null && (
+            <p className="mt-5 text-[11px] text-[#a66f6f]">
+              {security.error instanceof Error ? security.error.message : "Could not load sessions."}
+            </p>
+          )}
+          {!security.isLoading && security.error == null && sessions.length === 0 && (
+            <p className="mt-5 text-[11px] text-[#666]">No active sessions.</p>
+          )}
+
+          <div className="mt-4">
+            {sessions.map((session) => (
+              <div
+                key={session.sessionId}
+                className="flex flex-col gap-3 border-b border-white/[0.055] py-4 last:border-b-0 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div className="flex min-w-0 items-start gap-3">
+                  <Laptop size={16} strokeWidth={1.5} className="mt-0.5 shrink-0 text-[#666]" />
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-baseline gap-x-2">
+                      <p className="truncate text-[12px] font-medium text-[#d4d4d4]">{session.hostname}</p>
+                      {session.current && (
+                        <span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-[#739276]">
+                          Current
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-1 flex flex-wrap gap-x-3 text-[10px] text-[#5f5f5f]">
+                      <span className="flex items-center gap-1">
+                        <Clock3 size={10} /> {formatWhen(session.createdAt)}
+                      </span>
+                      <span>Expires {formatWhen(session.expiresAt)}</span>
+                    </p>
+                  </div>
+                </div>
+                {!session.current && (
+                  <TextAction
+                    disabled={revokeSession.isPending}
+                    onClick={() => revokeSession.mutate(session.sessionId)}
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <LogOut size={11} />
+                      {revokeSession.variables === session.sessionId ? "Signing out…" : "Sign out"}
+                    </span>
+                  </TextAction>
+                )}
+              </div>
+            ))}
+          </div>
+        </SettingsSection>
+
+        <SettingsSection className="py-7">
+          <SectionTitle count={devices.length}>Enrolled devices</SectionTitle>
+
+          {!security.isLoading && devices.length === 0 && (
+            <p className="mt-5 text-[11px] text-[#666]">No enrolled devices.</p>
+          )}
+
+          <div className="mt-4">
+            {devices.map((device) => (
+              <div
+                key={device.hwHash}
+                className="border-b border-white/[0.055] py-5 last:border-b-0"
+              >
+                <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                  <div className="flex min-w-0 items-start gap-3">
+                    <Monitor size={17} strokeWidth={1.5} className="mt-0.5 shrink-0 text-[#666]" />
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-baseline gap-x-2">
+                        <p className="truncate text-[12px] font-medium text-[#d7d7d7]">
+                          {device.hostname || "Unknown device"}
+                        </p>
+                        {device.current && (
+                          <span className="text-[9px] font-semibold uppercase tracking-[0.12em] text-[#739276]">
+                            Current machine
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-1 font-mono text-[9px] tracking-[0.05em] text-[#4f4f4f]">
+                        {shortId(device.hwHash)}
+                      </p>
+                    </div>
+                  </div>
+
+                  <dl className="grid grid-cols-3 gap-x-6 md:min-w-[420px]">
+                    <div>
+                      <dt className="text-[8px] uppercase tracking-[0.13em] text-[#505050]">Enrolled</dt>
+                      <dd className="mt-1 text-[9px] leading-snug text-[#777]">{formatWhen(device.enrolledAt)}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-[8px] uppercase tracking-[0.13em] text-[#505050]">Last seen</dt>
+                      <dd className="mt-1 text-[9px] leading-snug text-[#777]">{formatWhen(device.lastSeenAt)}</dd>
+                    </div>
+                    <div>
+                      <dt className="flex items-center gap-1 text-[8px] uppercase tracking-[0.13em] text-[#505050]">
+                        <Download size={9} /> Download
+                      </dt>
+                      <dd className="mt-1 text-[9px] leading-snug text-[#777]">{formatWhen(device.lastDownloadAt)}</dd>
+                    </div>
+                  </dl>
+                </div>
+
+                {!device.current && (
+                  <div className="mt-3 flex justify-end">
+                    <TextAction
+                      disabled={removeDevice.isPending}
+                      onClick={() => confirmRemoveDevice(device.hostname, device.hwHash)}
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <Trash2 size={11} />
+                        {removeDevice.variables === device.hwHash ? "Removing…" : "Remove device"}
+                      </span>
+                    </TextAction>
                   </div>
                 )}
               </div>
-              <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={onPickPhoto} />
-              <button
-                type="button"
-                disabled={uploading || !token}
-                onClick={() => fileRef.current?.click()}
-                className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[#8a8a8a] transition hover:text-white disabled:opacity-40"
-              >
-                {uploading ? "Uploading…" : "Change photo"}
-              </button>
-              {uploadError && <p className="max-w-[16rem] text-[11px] text-[#a07070]">{uploadError}</p>}
-            </div>
-
-            <div className="min-w-0 flex-1 space-y-3">
-              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#555]">Username</p>
-              <p className="font-title text-[clamp(1.25rem,2.5vw,1.75rem)] tracking-[0.08em] text-white/90">
-                {user?.username ?? "—"}
-              </p>
-            </div>
+            ))}
           </div>
 
-          <div className="mt-14 space-y-4">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#555]">Logged in on</p>
-            <p className="text-[11px] leading-relaxed text-[#6a6a6a]">
-              Machines enrolled for your account (hardware identity from the server).
-            </p>
-            {devicesError != null && (
-              <p className="text-[11px] text-[#8a5a5a]">
-                {devicesError instanceof Error ? devicesError.message : "Could not load devices."}
-              </p>
-            )}
-            {devicesError == null && devices.length === 0 && (
-              <p className="text-[12px] text-[#666]">No enrolled devices listed yet — sign in from a PC to add one.</p>
-            )}
-            {devices.length > 0 && (
-              <ul className="space-y-2">
-                {devices.map((d) => (
-                  <li
-                    key={d.hwHash}
-                    className="flex flex-wrap items-baseline justify-between gap-2 border-b border-white/[0.06] py-2 text-[12px] text-[#b0b0b0] last:border-0"
-                  >
-                    <span className="text-[12px] text-[#c0c0c0]">{d.hostname || "unknown device"}</span>
-                    <span className="font-mono text-[10px] text-[#5a5a5a]">{shortHw(d.hwHash)}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+          {actionError && <p className="mt-3 text-[11px] text-[#b87575]">{actionError}</p>}
+        </SettingsSection>
 
-          <div className="mt-14 space-y-5">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#555]">Most played</p>
-            {topPlayed.length === 0 ? (
-              <p className="text-[12px] leading-relaxed text-[#666]">Play some games — your top titles show up here.</p>
-            ) : (
-              <ul className="space-y-4">
-                {topPlayed.map((row) => (
-                  <li key={row.gameId} className="space-y-1.5">
-                    <div className="flex items-baseline justify-between gap-3">
-                      <span className="min-w-0 truncate text-[12px] text-[#b0b0b0]">{row.title}</span>
-                      <span className="shrink-0 tabular-nums text-[11px] text-[#666]">{row.totalMinutes} min</span>
-                    </div>
-                    <div className="h-2 overflow-hidden rounded-full bg-white/[0.05]">
-                      <div
-                        className="h-full rounded-full bg-gradient-to-r from-[#355a35] via-[#4a7a4a] to-[#5fa060]"
-                        style={{ width: `${Math.round(row.pct * 100)}%` }}
-                      />
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+        <SettingsSection className="py-7">
+          <SectionTitle>Most played</SectionTitle>
+          {topPlayed.length === 0 ? (
+            <p className="mt-5 text-[11px] text-[#666]">No playtime yet.</p>
+          ) : (
+            <ul className="mt-5 grid gap-x-10 gap-y-5 md:grid-cols-2">
+              {topPlayed.map((row) => (
+                <li key={row.gameId}>
+                  <div className="flex items-baseline justify-between gap-3">
+                    <span className="min-w-0 truncate text-[11px] text-[#aaa]">{row.title}</span>
+                    <span className="shrink-0 tabular-nums text-[9px] text-[#5c5c5c]">
+                      {row.totalMinutes} min
+                    </span>
+                  </div>
+                  <div className="mt-2 h-px bg-white/[0.055]">
+                    <div
+                      className="h-px bg-[#6f8d72]"
+                      style={{ width: `${Math.round(row.percentage * 100)}%` }}
+                    />
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
         </SettingsSection>
       </SettingsSurface>
     </div>

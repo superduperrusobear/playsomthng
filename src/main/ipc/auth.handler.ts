@@ -1,7 +1,14 @@
 import { IpcMain } from "electron";
 import { z } from "zod";
 
-import { IpcChannel, LoginPayloadSchema, UserPublicSchema, type UserPublic } from "../../shared/schemas";
+import {
+  AccountSecuritySchema,
+  IpcChannel,
+  LoginPayloadSchema,
+  UserPublicSchema,
+  type AccountSecurity,
+  type UserPublic,
+} from "../../shared/schemas";
 
 import { getCachedSystemInfo, ensureSystemInfoCollected, getHardwareUuidFromSysinfoSnapshot } from "../services/sysinfo.service";
 
@@ -76,6 +83,22 @@ export function registerAuthHandlers(ipcMain: IpcMain) {
 
   ipcMain.handle(IpcChannel.AUTH_RESTORE, async (_event, raw) => {
     const { user, token } = z.object({ user: UserPublicSchema, token: z.string().min(1) }).parse(raw);
+
+    // The persisted session file is encrypted at rest, but its `role` field is
+    // renderer-controlled and therefore untrusted. Before accepting the restore,
+    // validate the bearer token against the server when it's reachable. If the
+    // server confirms the session is invalid/revoked, refuse the restore so a
+    // stale or tampered session can't unlock the UI. Offline, fall back to the
+    // persisted token (server still enforces role on every real mutation).
+    const baseUrl = getEnabledLibraryBaseUrl();
+    if (baseUrl) {
+      const valid = await isStoredSessionStillValid(baseUrl, token);
+      if (valid === false) {
+        currentSession = null;
+        throw new Error("Your session is no longer valid on this server — please sign in again.");
+      }
+    }
+
     currentSession = { userId: user.id, token, user };
     return { ok: true as const };
   });
@@ -98,51 +121,12 @@ export function registerAuthHandlers(ipcMain: IpcMain) {
 
   });
 
-  const AvatarUploadPayloadSchema = z.object({
-    imageBase64: z.string().min(1),
-    contentType: z.string().min(1),
-  });
-
-  ipcMain.handle(IpcChannel.AUTH_AVATAR_UPLOAD, async (_event, raw) => {
-    const body = AvatarUploadPayloadSchema.parse(raw);
+  const accountRequest = async (path: string, method = "GET"): Promise<unknown> => {
     if (!currentSession) throw new Error("Not authenticated");
     const baseUrl = getEnabledLibraryBaseUrl();
-    const url = new URL("/api/auth/avatar", `${baseUrl}/`).toString();
+    const url = new URL(path, `${baseUrl}/`).toString();
     const res = await debugFetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${currentSession.token}`,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify({ imageBase64: body.imageBase64, contentType: body.contentType }),
-      timeoutMs: 30000,
-    });
-    const text = await res.text();
-    if (!res.ok) {
-      let msg = text;
-      try {
-        const j = JSON.parse(text) as { error?: string };
-        if (j.error) msg = j.error;
-      } catch {
-        /* ignore */
-      }
-      throw new Error(msg || `Avatar upload failed (HTTP ${res.status})`);
-    }
-    const j = JSON.parse(text) as { avatarUrl?: string };
-    if (!j.avatarUrl) throw new Error("Server did not return avatarUrl");
-    currentSession = {
-      ...currentSession,
-      user: { ...currentSession.user, avatarUrl: j.avatarUrl },
-    };
-    return { avatarUrl: j.avatarUrl };
-  });
-
-  ipcMain.handle(IpcChannel.AUTH_DEVICES_GET, async () => {
-    if (!currentSession) throw new Error("Not authenticated");
-    const baseUrl = getEnabledLibraryBaseUrl();
-    const url = new URL("/api/auth/devices", `${baseUrl}/`).toString();
-    const res = await debugFetch(url, {
+      method,
       headers: {
         Authorization: `Bearer ${currentSession.token}`,
         Accept: "application/json",
@@ -151,12 +135,54 @@ export function registerAuthHandlers(ipcMain: IpcMain) {
     });
     const text = await res.text();
     if (!res.ok) {
-      throw new Error(text || `Could not load devices (HTTP ${res.status})`);
+      let message = text;
+      try {
+        const j = JSON.parse(text) as { error?: string };
+        if (j.error) message = j.error;
+      } catch {
+        /* ignore */
+      }
+      throw new Error(message || `Account request failed (HTTP ${res.status})`);
     }
-    return JSON.parse(text) as {
-      devices: { hwHash: string; hostname: string; enrolledAt: string }[];
-    };
+    return text ? JSON.parse(text) : {};
+  };
+
+  ipcMain.handle(IpcChannel.AUTH_SECURITY_GET, async (): Promise<AccountSecurity> => {
+    return AccountSecuritySchema.parse(await accountRequest("/api/auth/security"));
+  });
+
+  ipcMain.handle(IpcChannel.AUTH_DEVICE_REVOKE, async (_event, raw) => {
+    const { hwHash } = z.object({ hwHash: z.string().min(1) }).parse(raw);
+    return accountRequest(`/api/auth/devices/${encodeURIComponent(hwHash)}`, "DELETE");
+  });
+
+  ipcMain.handle(IpcChannel.AUTH_SESSION_REVOKE, async (_event, raw) => {
+    const { sessionId } = z.object({ sessionId: z.string().min(1) }).parse(raw);
+    return accountRequest(`/api/auth/sessions/${encodeURIComponent(sessionId)}`, "DELETE");
   });
 
 }
 
+/**
+ * Validate a persisted bearer token against the server by hitting the
+ * session-gated `/api/auth/security` endpoint. Returns:
+ *   - true  if the server accepted the token (200),
+ *   - false if the server rejected it (401/403 — revoked or expired),
+ *   - null  if the server could not be reached (offline → keep the session).
+ */
+async function isStoredSessionStillValid(baseUrl: string, token: string): Promise<boolean | null> {
+  try {
+    const url = new URL("/api/auth/security", `${baseUrl.replace(/\/$/, "")}/`).toString();
+    const res = await debugFetch(url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      timeoutMs: 8000,
+    });
+    if (res.ok) return true;
+    if (res.status === 401 || res.status === 403) return false;
+    // 5xx / network hiccup → don't punish the user, treat as offline.
+    return null;
+  } catch {
+    return null;
+  }
+}

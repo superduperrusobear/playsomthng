@@ -130,6 +130,7 @@ fn apply_catalog_meta_to_game(g: &mut CatalogGame, meta: &CatalogMeta) {
         }
         .to_string(),
     );
+    g.added_at = Some(meta.created_at);
 }
 
 async fn build_catalog_local(state: &AppState) -> CatalogSnapshot {
@@ -271,6 +272,7 @@ fn scan_local_games(
             emulator_required: None,
             special_instructions: None,
             publish_state: None,
+            added_at: None,
         });
     }
 
@@ -366,6 +368,7 @@ async fn build_catalog_remote(http: &reqwest::Client, config: &AppConfig) -> Cat
             emulator_required: None,
             special_instructions: None,
             publish_state: None,
+            added_at: None,
         });
     }
 

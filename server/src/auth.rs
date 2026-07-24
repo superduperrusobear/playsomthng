@@ -1,14 +1,19 @@
 //! Auth user table + hardware enrollments live **only on the server** under `dataDir/auth/`.
 //! The Electron client sends `hardwareUuid` from SMBIOS; it does not store auth JSON locally.
 //!
-//! **Non-admin setup keys are one-time:** after the first successful login that enrolls a new machine,
-//! that user's `setupKey` in `auth-users.json` is cleared. Enrolling another machine requires a new key
-//! (you edit the file). Admin accounts keep their key until you change it manually.
+//! Setup keys are one-time for every role. Only an Argon2id verifier is stored
+//! in `auth-users.json`; the readable code is returned only when it is issued.
+//! After enrollment, every device (including an admin device) authenticates by
+//! signing a short-lived server challenge with its local Ed25519 key.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use argon2::{
+    Argon2,
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+};
 use axum::http::{HeaderMap, header};
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
@@ -17,9 +22,11 @@ use serde::{Deserialize, Serialize};
 pub struct AuthUserRow {
     pub id: String,
     pub username: String,
-    #[serde(rename = "setupKey")]
+    #[serde(rename = "setupKeyHash")]
     pub setup_key: String,
     pub role: String,
+    #[serde(default)]
+    pub created_at: String,
     /// Revoked accounts stay in the file but are denied downloads (not deleted).
     #[serde(default)]
     pub blocked: bool,
@@ -60,6 +67,10 @@ pub struct DeviceEntry {
     #[serde(default)]
     pub enrolled_at: String,
     #[serde(default)]
+    pub last_seen_at: String,
+    #[serde(default)]
+    pub last_download_at: Option<String>,
+    #[serde(default)]
     pub pub_key: String,
 }
 
@@ -89,8 +100,6 @@ pub struct UserDto {
     pub username: String,
     pub role: String,
     pub created_at: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub avatar_url: Option<String>,
 }
 
 /// Default auth table (seed). Copy `server/seed/auth-users.json` to `<dataDir>/auth/auth-users.json` to override.
@@ -183,15 +192,8 @@ fn save_users(data_dir: &Path, file: &AuthUsersFile) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Clears a non-admin user's setup key after it was used to enroll a device (one-time key).
-fn clear_setup_key_after_enrollment(
-    data_dir: &Path,
-    user_id: &str,
-    role: &str,
-) -> anyhow::Result<()> {
-    if role == "admin" {
-        return Ok(());
-    }
+/// Clears a setup-key verifier after it enrolls one device.
+fn clear_setup_key_after_enrollment(data_dir: &Path, user_id: &str) -> anyhow::Result<()> {
     let mut file = load_users(data_dir)?;
     if let Some(row) = file.users.iter_mut().find(|u| u.id == user_id) {
         row.setup_key.clear();
@@ -206,10 +208,23 @@ pub struct AdminUserRow {
     pub id: String,
     pub username: String,
     pub role: String,
+    pub created_at: String,
     /// A key is issued and not yet used to enroll a machine.
     pub has_pending_key: bool,
     pub blocked: bool,
-    pub devices: Vec<DeviceEntry>,
+    pub devices: Vec<AdminDeviceRow>,
+}
+
+/// Safe device projection for the admin API. The device public key remains
+/// server-only; the fingerprint is enough to address a revoke operation.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminDeviceRow {
+    pub hw_hash: String,
+    pub hostname: String,
+    pub enrolled_at: String,
+    pub last_seen_at: String,
+    pub last_download_at: Option<String>,
 }
 
 pub fn list_users_for_admin(data_dir: &Path, salt: &str) -> anyhow::Result<Vec<AdminUserRow>> {
@@ -219,13 +234,26 @@ pub fn list_users_for_admin(data_dir: &Path, salt: &str) -> anyhow::Result<Vec<A
         .users
         .into_iter()
         .map(|u| {
-            let devices = bindings.by_user_id.get(&u.id).cloned().unwrap_or_default();
+            let devices = bindings
+                .by_user_id
+                .get(&u.id)
+                .into_iter()
+                .flatten()
+                .map(|d| AdminDeviceRow {
+                    hw_hash: d.hw_hash.clone(),
+                    hostname: d.hostname.clone(),
+                    enrolled_at: d.enrolled_at.clone(),
+                    last_seen_at: d.last_seen_at.clone(),
+                    last_download_at: d.last_download_at.clone(),
+                })
+                .collect();
             AdminUserRow {
                 has_pending_key: !u.setup_key.trim().is_empty(),
                 blocked: u.blocked,
                 id: u.id,
                 username: u.username,
                 role: u.role,
+                created_at: u.created_at,
                 devices,
             }
         })
@@ -285,12 +313,13 @@ pub fn create_user(data_dir: &Path, username: &str, role: &str) -> anyhow::Resul
     );
 
     let id = uuid::Uuid::new_v4().to_string();
-    let key = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
+    let key = uuid::Uuid::new_v4().simple().to_string()[..20].to_string();
     users.users.push(AuthUserRow {
         id: id.clone(),
         username: username.to_string(),
-        setup_key: key.clone(),
+        setup_key: hash_setup_key(&key)?,
         role: role.to_string(),
+        created_at: iso_now(),
         blocked: false,
     });
     save_users(data_dir, &users)?;
@@ -336,14 +365,14 @@ pub fn revoke_setup_key(data_dir: &Path, user_id: &str) -> anyhow::Result<bool> 
 
 /// Issues a fresh one-time key and returns it. Shown to the admin once.
 pub fn issue_setup_key(data_dir: &Path, user_id: &str) -> anyhow::Result<String> {
-    let key = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
+    let key = uuid::Uuid::new_v4().simple().to_string()[..20].to_string();
     let mut users = load_users(data_dir)?;
     let row = users
         .users
         .iter_mut()
         .find(|u| u.id == user_id)
         .context("user not found")?;
-    row.setup_key = key.clone();
+    row.setup_key = hash_setup_key(&key)?;
     row.blocked = false; // re-inviting lets a revoked user back in
     save_users(data_dir, &users)?;
     Ok(key)
@@ -483,8 +512,22 @@ fn find_user_by_username<'a>(users: &'a [AuthUserRow], username: &str) -> Option
     users.iter().find(|row| row.username.to_lowercase() == u)
 }
 
+fn hash_setup_key(setup_key: &str) -> anyhow::Result<String> {
+    let salt = SaltString::encode_b64(uuid::Uuid::new_v4().as_bytes())
+        .map_err(|e| anyhow::anyhow!("generate setup-key salt: {e}"))?;
+    Argon2::default()
+        .hash_password(setup_key.trim().to_lowercase().as_bytes(), &salt)
+        .map(|h| h.to_string())
+        .map_err(|e| anyhow::anyhow!("hash setup key: {e}"))
+}
+
 fn setup_key_matches(user: &AuthUserRow, setup_key: &str) -> bool {
-    user.setup_key.to_lowercase() == setup_key.trim().to_lowercase()
+    let Ok(hash) = PasswordHash::new(&user.setup_key) else {
+        return false;
+    };
+    Argon2::default()
+        .verify_password(setup_key.trim().to_lowercase().as_bytes(), &hash)
+        .is_ok()
 }
 
 fn iso_now() -> String {
@@ -510,36 +553,49 @@ pub fn hardware_enrollments_for_user(data_dir: &Path, salt: &str, user_id: &str)
     file.by_user_id.get(user_id).cloned().unwrap_or_default()
 }
 
-/// On-disk avatar for `user_id` (any of jpg/png/webp/gif), if present.
-pub fn find_avatar_path(data_dir: &Path, user_id: &str) -> Option<PathBuf> {
-    let dir = data_dir.join("auth").join("avatars");
-    let entries = std::fs::read_dir(&dir).ok()?;
-    for e in entries.flatten() {
-        let path = e.path();
-        let name = path.file_name()?.to_string_lossy();
-        if name.starts_with(user_id) && name.as_bytes().get(user_id.len()) == Some(&b'.') {
-            return Some(path);
-        }
+/// A persisted session is usable only while unexpired and still attached to
+/// an enrolled public key. This drops legacy unbound admin sessions too.
+pub fn session_device_is_valid(
+    data_dir: &Path,
+    salt: &str,
+    session: &crate::state::AuthSession,
+) -> bool {
+    if session.expires_at <= Utc::now().timestamp() {
+        return false;
     }
-    None
+    session
+        .login_hardware_uuid
+        .as_deref()
+        .and_then(|hw| device_pub_key(data_dir, salt, &session.user_id, hw))
+        .is_some()
 }
 
-fn user_dto(data_dir: &Path, public_origin: &str, user: &AuthUserRow) -> UserDto {
-    let avatar_url = if find_avatar_path(data_dir, &user.id).is_some() {
-        Some(format!(
-            "{}/api/auth/avatars/{}",
-            public_origin.trim_end_matches('/'),
-            user.id
-        ))
-    } else {
-        None
+/// Records a successful, authenticated download request for one device.
+pub fn mark_device_download(
+    data_dir: &Path,
+    salt: &str,
+    user_id: &str,
+    hw_hash: &str,
+) -> anyhow::Result<bool> {
+    let mut bindings = load_bindings(data_dir, salt)?;
+    let Some(device) = bindings
+        .by_user_id
+        .get_mut(user_id)
+        .and_then(|list| list.iter_mut().find(|d| d.hw_hash == hw_hash))
+    else {
+        return Ok(false);
     };
+    device.last_download_at = Some(iso_now());
+    save_bindings(data_dir, &bindings)?;
+    Ok(true)
+}
+
+fn user_dto(user: &AuthUserRow) -> UserDto {
     UserDto {
         id: user.id.clone(),
         username: user.username.clone(),
         role: user.role.clone(),
-        created_at: iso_now(),
-        avatar_url,
+        created_at: if user.created_at.is_empty() { iso_now() } else { user.created_at.clone() },
     }
 }
 
@@ -560,7 +616,6 @@ pub fn login(
     pub_key: Option<&str>,
     nonce: Option<&str>,
     signature: Option<&str>,
-    public_origin: &str,
 ) -> Result<LoginResponse, &'static str> {
     let AuthUsersFile { users } = load_users(data_dir).map_err(|_| "Server auth config error")?;
     let user = find_user_by_username(&users, username).ok_or("UNKNOWN_USERNAME")?;
@@ -569,16 +624,9 @@ pub fn login(
     }
 
     let mint = |user: &AuthUserRow| LoginResponse {
-        token: format!("session-{}-{}", user.id, uuid::Uuid::new_v4()),
-        user: user_dto(data_dir, public_origin, user),
+        token: format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple()),
+        user: user_dto(user),
     };
-
-    if user.role == "admin" {
-        if !setup_key_matches(user, setup_key) {
-            return Err("Invalid username or setup key");
-        }
-        return Ok(mint(user));
-    }
 
     let hw = hardware_uuid
         .and_then(|s| normalize_hardware_uuid(s))
@@ -604,6 +652,14 @@ pub fn login(
         if !verify_device_signature(&device.pub_key, n, sig) {
             return Err("BAD_SIGNATURE");
         }
+        let now = iso_now();
+        if let Some(device) = list.iter_mut().find(|d| d.hw_hash == hw_hash) {
+            device.last_seen_at = now;
+            if let Some(name) = hostname.map(str::trim).filter(|s| !s.is_empty()) {
+                device.hostname = name.to_string();
+            }
+        }
+        save_bindings(data_dir, &bindings).map_err(|_| "Failed to update device activity")?;
         return Ok(mint(user));
     }
 
@@ -620,14 +676,17 @@ pub fn login(
 
     // Re-enrollment replaces any keyless remnant of the same machine.
     list.retain(|d| !(d.hw_hash == hw_hash && d.pub_key.is_empty()));
+    let now = iso_now();
     list.push(DeviceEntry {
         hw_hash,
         hostname: hostname.unwrap_or("unknown device").trim().to_string(),
-        enrolled_at: iso_now(),
+        enrolled_at: now.clone(),
+        last_seen_at: now,
+        last_download_at: None,
         pub_key: pk.to_string(),
     });
     save_bindings(data_dir, &bindings).map_err(|_| "Failed to save hardware enrollment")?;
-    clear_setup_key_after_enrollment(data_dir, &user.id, &user.role)
+    clear_setup_key_after_enrollment(data_dir, &user.id)
         .map_err(|_| "Failed to save auth config")?;
 
     Ok(mint(user))
@@ -636,6 +695,8 @@ pub fn login(
 #[cfg(test)]
 mod account_tests {
     use super::*;
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+    use ed25519_dalek::{Signer, SigningKey};
 
     fn seed(dir: &Path) {
         std::fs::create_dir_all(auth_dir(dir)).unwrap();
@@ -647,8 +708,48 @@ mod account_tests {
         let d = tempfile::tempdir().unwrap();
         seed(d.path());
         let (id, key) = create_user(d.path(), "mike", "user").unwrap();
-        assert_eq!(key.len(), 12);
+        assert_eq!(key.len(), 20);
         assert_eq!(account_state(d.path(), &id), AccountState::Active);
+    }
+
+    #[test]
+    fn setup_code_is_hashed_at_rest() {
+        let d = tempfile::tempdir().unwrap();
+        seed(d.path());
+        let (_id, key) = create_user(d.path(), "mike", "user").unwrap();
+        let raw = std::fs::read_to_string(auth_users_path(d.path())).unwrap();
+        assert!(!raw.contains(&key));
+        let users = load_users(d.path()).unwrap();
+        assert!(users.users[0].setup_key.starts_with("$argon2id$"));
+        assert!(setup_key_matches(&users.users[0], &key));
+    }
+
+    #[test]
+    fn admin_enrolls_once_then_uses_device_signature() {
+        let d = tempfile::tempdir().unwrap();
+        seed(d.path());
+        let (id, key) = create_user(d.path(), "root", "admin").unwrap();
+        let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
+        let public_key = B64.encode(signing_key.verifying_key().as_bytes());
+
+        login(
+            d.path(), "salt", "root", &key, Some("machine-1"), Some("desk"),
+            Some(&public_key), None, None,
+        ).unwrap();
+        assert!(!list_users_for_admin(d.path(), "salt").unwrap()[0].has_pending_key);
+
+        let nonce = "one-time-nonce";
+        let signature = B64.encode(signing_key.sign(nonce.as_bytes()).to_bytes());
+        login(
+            d.path(), "salt", "root", "", Some("machine-1"), Some("desk"),
+            Some(&public_key), Some(nonce), Some(&signature),
+        ).unwrap();
+
+        let hw_hash = hash_hardware("salt", "machine-1");
+        assert!(mark_device_download(d.path(), "salt", &id, &hw_hash).unwrap());
+        let device = &hardware_enrollments_for_user(d.path(), "salt", &id)[0];
+        assert!(!device.last_seen_at.is_empty());
+        assert!(device.last_download_at.is_some());
     }
 
     #[test]

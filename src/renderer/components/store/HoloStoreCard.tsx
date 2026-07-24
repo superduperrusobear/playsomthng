@@ -5,186 +5,202 @@ import { STORE_CARD_WIDTH_PX } from "./storeCarouselLayout";
 import { cn } from "../../lib/cn";
 import { isStoreTemplateId } from "../../data/storeTemplateGames";
 
-const MAX_TILT = 8;
+const MAX_TILT = 7;
+const TILT_SLOW = "transform 0.6s cubic-bezier(0.22, 1, 0.36, 1)";
+const TILT_FAST = "transform 0.1s cubic-bezier(0.23, 1, 0.32, 1)";
+
+/** Cover-flow pose: cards angle toward the center and recede/desaturate with distance. */
+function poseFor(offset: number) {
+  const side = Math.sign(offset);
+  const d = Math.min(Math.abs(offset), 2);
+  if (d === 0) {
+    return { t: "rotateY(0deg) translateZ(46px) translateY(-10px) scale(1.06)", f: "none" };
+  }
+  if (d === 1) {
+    return {
+      t: `rotateY(${-side * 9}deg) translateZ(-18px) translateY(4px) scale(0.9)`,
+      f: "brightness(0.8) saturate(0.9)",
+    };
+  }
+  return {
+    t: `rotateY(${-side * 16}deg) translateZ(-55px) translateY(10px) scale(0.8)`,
+    f: "brightness(0.55) saturate(0.68)",
+  };
+}
 
 export const HoloStoreCard = forwardRef<HTMLDivElement, {
   game: Game;
-  isSelected: boolean;
-  distance: number;
+  /** Signed steps from the centered card (negative = left of center). */
+  offset: number;
   /** Single-click — scroll carousel so this card is centered. */
   onCenter?: () => void;
-  /** Double-click — opens the game hub with a flip animation. */
+  /** Double-click — opens the game hub. */
   onNavigate: (rect: DOMRect) => void;
-}>(function HoloStoreCard({
-  game,
-  isSelected,
-  distance,
-  onCenter,
-  onNavigate,
-}, ref) {
-  const innerRef = useRef<HTMLDivElement>(null);
+}>(function HoloStoreCard({ game, offset, onCenter, onNavigate }, ref) {
+  const tiltRef = useRef<HTMLDivElement>(null);
+  const shineRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef<number | null>(null);
   const selectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [selecting, setSelecting] = useState(false);
-  const [tiltTransform, setTiltTransform] = useState(
-    "perspective(900px) rotateX(0deg) rotateY(0deg) translateZ(0px)"
-  );
-  const [tiltTransition, setTiltTransition] = useState(
-    "transform 0.45s cubic-bezier(0.23, 1, 0.32, 1)"
-  );
-  const [shimmer, setShimmer] = useState({ x: 50, y: 50, on: false });
 
+  const isSelected = offset === 0;
+  const near = Math.abs(offset) <= 1;
+  const pose = poseFor(offset);
   const cover = resolveStoreCoverImage(game);
-  const isFar = distance >= 2;
 
-  const baseRotateY = isFar ? (distance > 0 ? -12 : 12) : distance === 1 ? (distance > 0 ? -6 : 6) : 0;
-  const baseTranslateZ = isSelected ? 40 : isFar ? -30 : -10;
-  const baseScale = isSelected ? 1.08 : isFar ? 0.82 : 0.92;
-  const baseBrightness = isSelected ? 1 : isFar ? 0.45 : 0.65;
+  useEffect(
+    () => () => {
+      if (selectTimerRef.current) clearTimeout(selectTimerRef.current);
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    },
+    [],
+  );
 
+  /** Pointer tilt writes styles directly — no React re-render per frame. */
+  const onPointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      if (!isSelected) return;
+      const { clientX, clientY } = e;
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      rafRef.current = requestAnimationFrame(() => {
+        rafRef.current = null;
+        const el = tiltRef.current;
+        if (!el) return;
+        const r = el.getBoundingClientRect();
+        const x = (clientX - r.left) / r.width;
+        const y = (clientY - r.top) / r.height;
+        el.style.transition = TILT_FAST;
+        el.style.transform = `rotateX(${-(y - 0.5) * MAX_TILT}deg) rotateY(${(x - 0.5) * MAX_TILT}deg) translateZ(14px)`;
+        const s = shineRef.current;
+        if (s) {
+          s.style.background = `radial-gradient(circle at ${x * 100}% ${y * 100}%, rgba(255,255,255,0.16) 0%, transparent 55%)`;
+          s.style.opacity = "1";
+        }
+      });
+    },
+    [isSelected],
+  );
+
+  const resetTilt = useCallback(() => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = null;
+    const el = tiltRef.current;
+    if (el) {
+      el.style.transition = TILT_SLOW;
+      el.style.transform = "rotateX(0deg) rotateY(0deg) translateZ(0px)";
+    }
+    const s = shineRef.current;
+    if (s) s.style.opacity = "0";
+  }, []);
+
+  // If the carousel scrolls past a card mid-hover, drop its tilt.
   useEffect(() => {
-    setTiltTransform(
-      `perspective(900px) rotateX(0deg) rotateY(${baseRotateY}deg) translateZ(${baseTranslateZ}px)`
-    );
-    setTiltTransition("transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)");
-  }, [baseRotateY, baseTranslateZ]);
+    if (!isSelected) resetTilt();
+  }, [isSelected, resetTilt]);
 
-  const onPointerMove = useCallback((e: React.PointerEvent) => {
-    if (!isSelected) return;
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    rafRef.current = requestAnimationFrame(() => {
-      const el = innerRef.current;
-      if (!el) return;
-      const r = el.getBoundingClientRect();
-      const x = (e.clientX - r.left) / r.width;
-      const y = (e.clientY - r.top) / r.height;
-      setTiltTransform(
-        `perspective(900px) rotateX(${-(y - 0.5) * MAX_TILT}deg) rotateY(${(x - 0.5) * MAX_TILT + baseRotateY}deg) translateZ(${baseTranslateZ + 20}px)`
-      );
-      setTiltTransition("transform 0.08s cubic-bezier(0.23, 1, 0.32, 1)");
-      setShimmer({ x: x * 100, y: y * 100, on: true });
-    });
-  }, [isSelected, baseRotateY, baseTranslateZ]);
-
-  const onPointerLeave = useCallback(() => {
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    setTiltTransform(
-      `perspective(900px) rotateX(0deg) rotateY(${baseRotateY}deg) translateZ(${baseTranslateZ}px)`
-    );
-    setTiltTransition("transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)");
-    setShimmer((s) => ({ ...s, on: false }));
-  }, [baseRotateY, baseTranslateZ]);
+  const beginSelect = (rect: DOMRect) => {
+    if (selecting) return;
+    setSelecting(true);
+    if (selectTimerRef.current) clearTimeout(selectTimerRef.current);
+    selectTimerRef.current = setTimeout(() => {
+      selectTimerRef.current = null;
+      onNavigate(rect);
+    }, 210);
+  };
 
   return (
     <div
       ref={ref}
-      className={cn("group shrink-0 snap-center", "cursor-pointer")}
-      onClick={() => {
-        onCenter?.();
-      }}
-      style={selecting ? {
-        width: STORE_CARD_WIDTH_PX,
-        animation: "cardPickPulse 0.22s ease-out forwards",
-        willChange: "transform, filter",
-      } : {
-        width: STORE_CARD_WIDTH_PX,
-        transform: `scale(${baseScale})`,
-        filter: `brightness(${baseBrightness})`,
-        transition:
-          "transform 0.55s cubic-bezier(0.34, 1.56, 0.64, 1), filter 0.65s cubic-bezier(0.25, 0.46, 0.45, 0.94)",
-        willChange: "transform, filter",
-      }}
-      onDoubleClick={(e) => {
-        if (selecting) return;
-        const rect = e.currentTarget.getBoundingClientRect();
-        setSelecting(true);
-        if (selectTimerRef.current) clearTimeout(selectTimerRef.current);
-        selectTimerRef.current = setTimeout(() => {
-          selectTimerRef.current = null;
-          onNavigate(rect);
-        }, 210);
-      }}
+      className="group shrink-0 cursor-pointer snap-center"
+      style={{ width: STORE_CARD_WIDTH_PX, transformStyle: "preserve-3d" }}
+      onClick={() => onCenter?.()}
+      onDoubleClick={(e) => beginSelect(e.currentTarget.getBoundingClientRect())}
       role="button"
       tabIndex={0}
       aria-label={`Open ${game.title}`}
       onKeyDown={(e) => {
-        if ((e.key === "Enter" || e.key === " ") && !selecting) {
+        if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
-          setSelecting(true);
-          if (selectTimerRef.current) clearTimeout(selectTimerRef.current);
-          selectTimerRef.current = setTimeout(() => {
-            selectTimerRef.current = null;
-            onNavigate(rect);
-          }, 210);
+          beginSelect((e.currentTarget as HTMLDivElement).getBoundingClientRect());
         }
       }}
     >
+      {/* Pose in the arc (React-driven; single transition, no competing transforms) */}
       <div
-        ref={innerRef}
-        onPointerMove={onPointerMove}
-        onPointerLeave={onPointerLeave}
-        onPointerCancel={onPointerLeave}
         style={{
-          transform: tiltTransform,
-          transition: tiltTransition,
+          transform: pose.t,
+          filter: selecting ? undefined : pose.f,
+          transition: "transform 0.6s cubic-bezier(0.22, 1, 0.36, 1), filter 0.55s ease",
           transformStyle: "preserve-3d",
-          willChange: "transform",
+          willChange: "transform, filter",
+          animation: selecting ? "cardPickPulse 0.24s ease-out forwards" : undefined,
         }}
-        className="flex flex-col"
       >
+        {/* Pointer tilt layer (DOM-driven) */}
         <div
-          className={cn(
-            "relative aspect-[3/4] w-full overflow-hidden rounded-lg border bg-[#1e1e1e]",
-            "transition-[border-color,box-shadow,transform] duration-500 ease-[cubic-bezier(0.25,0.46,0.45,0.94)]",
-            isSelected
-              ? "border-[#4a4a4a] card-shadow-store-selected"
-              : isFar
-              ? "border-[#222] card-shadow-store-far"
-              : "border-[#333] card-shadow-store-mid",
-            isSelected && "hover:border-[#5a5a5a]",
-          )}
+          ref={tiltRef}
+          onPointerMove={onPointerMove}
+          onPointerLeave={resetTilt}
+          onPointerCancel={resetTilt}
+          className="relative"
+          style={{ transformStyle: "preserve-3d", transition: TILT_SLOW, willChange: "transform" }}
         >
-          {cover ? (
-            <img
-              src={cover}
-              alt=""
-              className="h-full w-full object-cover"
-              draggable={false}
-              decoding="async"
-              sizes={`${STORE_CARD_WIDTH_PX}px`}
-            />
-          ) : (
-            <div className="flex h-full flex-col items-center justify-center bg-gradient-to-br from-[#2c2c2c] to-[#141414] px-3 text-center">
-              <span className="text-[10px] font-medium uppercase tracking-[0.2em] text-[#444]">
-                {isStoreTemplateId(game.id) ? "Preview" : "No cover"}
-              </span>
-            </div>
-          )}
+          {/* Card face + floor reflection */}
+          <div
+            className={cn(
+              "relative aspect-[3/4] w-full overflow-hidden rounded-xl border bg-[#101010]",
+              "transition-[border-color,box-shadow] duration-500",
+              isSelected
+                ? "border-white/20 card-shadow-store-selected"
+                : near
+                  ? "border-white/[0.07] card-shadow-store-mid"
+                  : "border-white/[0.04] card-shadow-store-far",
+            )}
+            style={
+              {
+                WebkitBoxReflect:
+                  "below 12px linear-gradient(to bottom, transparent 76%, rgba(0,0,0,0.3) 100%)",
+              } as React.CSSProperties
+            }
+          >
+            {cover ? (
+              <img
+                src={cover}
+                alt=""
+                className="h-full w-full object-cover"
+                draggable={false}
+                decoding="async"
+                sizes={`${STORE_CARD_WIDTH_PX}px`}
+              />
+            ) : (
+              <div className="flex h-full flex-col items-center justify-center bg-gradient-to-br from-[#2c2c2c] to-[#141414] px-3 text-center">
+                <span className="text-[10px] font-medium uppercase tracking-[0.2em] text-[#444]">
+                  {isStoreTemplateId(game.id) ? "Preview" : "No cover"}
+                </span>
+              </div>
+            )}
 
-          <div className="card-glimmer card-glimmer--store rounded-lg" aria-hidden />
+            {/* One light sweep when the card lands center — replaces the old looping shimmer */}
+            {isSelected && <div aria-hidden className="store-sheen" />}
 
-          {isSelected && (
+            {/* Pointer-follow shine (selected only; driven from onPointerMove) */}
             <div
-              aria-hidden="true"
-              className="pointer-events-none absolute inset-0 z-[2] mix-blend-screen"
+              ref={shineRef}
+              aria-hidden
+              className="pointer-events-none absolute inset-0 z-[2] opacity-0 mix-blend-screen transition-opacity duration-300"
+            />
+
+            {/* Glass edge */}
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-0 z-[3] rounded-xl"
               style={{
-                background: `radial-gradient(circle at ${shimmer.x}% ${shimmer.y}%, rgba(255,255,255,0.14) 0%, transparent 50%)`,
-                opacity: shimmer.on ? 0.8 : 0,
-                transition: shimmer.on ? "opacity 0.08s ease" : "opacity 0.4s ease",
+                background:
+                  "linear-gradient(160deg, rgba(255,255,255,0.09) 0%, rgba(255,255,255,0.02) 28%, transparent 55%, rgba(0,0,0,0.12) 100%)",
+                mixBlendMode: "overlay",
               }}
             />
-          )}
-
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-0 z-[3] rounded-lg mix-blend-overlay"
-            style={{
-              background: isSelected
-                ? "linear-gradient(135deg, rgba(255,255,255,0.06) 0%, transparent 50%, rgba(0,0,0,0.08) 100%)"
-                : "linear-gradient(135deg, rgba(255,255,255,0.03) 0%, transparent 50%, rgba(0,0,0,0.06) 100%)",
-            }}
-          />
+          </div>
         </div>
       </div>
     </div>

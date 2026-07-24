@@ -2,11 +2,18 @@ import { z } from "zod";
 import { GameListItemSchema } from "./game.schema";
 import { PlatformSchema } from "./game.schema";
 
+/** Credentials may use plain HTTP only on the same machine during development. */
+export const SecureServerUrlSchema = z.string().url().refine((raw) => {
+  const url = new URL(raw);
+  if (url.protocol === "https:") return true;
+  if (url.protocol !== "http:") return false;
+  return ["localhost", "127.0.0.1", "::1", "[::1]"].includes(url.hostname);
+}, "Remote servers must use HTTPS so credentials are encrypted in transit");
+
 export const LibrarySourceSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1),
-  baseUrl: z.string().url(),
-  apiKey: z.string().optional(),
+  baseUrl: SecureServerUrlSchema,
   enabled: z.boolean().default(true),
   lastSynced: z.string().datetime().optional(),
 });

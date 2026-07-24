@@ -27,6 +27,7 @@ import { registerStoredSessionHandlers } from "./ipc/stored-session.handler";
 import { registerLocalLibraryFileHandlers } from "./ipc/local-library-file.handler";
 import { registerLocalDownloadsFileHandlers } from "./ipc/local-downloads-file.handler";
 import { registerManifestHandlers } from "./ipc/manifest.handler";
+import { registerAdminApiHandlers } from "./ipc/admin-api.handler";
 import { registerCatalogMetaHandlers } from "./ipc/catalog-meta.handler";
 import { registerIgdbHandlers } from "./ipc/igdb.handler";
 import { registerInstallHandlers } from "./ipc/install.handler";
@@ -81,6 +82,7 @@ app.whenReady().then(async () => {
   registerServerStatusHandlers(ipcMain);
   registerLibraryHandlers(ipcMain);
   registerManifestHandlers(ipcMain);
+  registerAdminApiHandlers(ipcMain);
   registerGameHandlers(ipcMain);
   registerSettingsHandlers(ipcMain);
   registerSessionContextHandlers(ipcMain);

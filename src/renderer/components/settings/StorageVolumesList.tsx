@@ -104,12 +104,13 @@ export function StorageVolumesList({
                   {label}
                 </span>
                 {preferred && (
-                  <Star
-                    className="ml-1.5 inline-block h-3.5 w-3.5 -translate-y-px text-amber-400"
-                    fill="currentColor"
-                    aria-hidden
-                    title="Preferred install drive"
-                  />
+                  <span title="Preferred install drive" className="ml-1.5 inline-flex">
+                    <Star
+                      className="h-3.5 w-3.5 -translate-y-px text-amber-400"
+                      fill="currentColor"
+                      aria-hidden
+                    />
+                  </span>
                 )}
               </div>
               <p

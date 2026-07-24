@@ -6,13 +6,11 @@ import appLogo from "../../assets/app-logo.svg";
 /** Shown when a configured server does not answer. Never on first run. */
 export function ServerUnreachable({
   url,
-  error,
   retrying,
   onRetry,
   onChangeServer,
 }: {
   url: string;
-  error?: string;
   retrying: boolean;
   onRetry: () => void;
   onChangeServer: () => void;
@@ -29,7 +27,6 @@ export function ServerUnreachable({
             Can&apos;t reach the server
           </p>
           <p className="mt-1.5 break-all font-mono text-[10px] text-[#555]">{url}</p>
-          {error && <p className="mt-1.5 text-[10px] text-[#5a4a4a]">{error}</p>}
         </div>
 
         <div className="flex flex-col items-center gap-1">

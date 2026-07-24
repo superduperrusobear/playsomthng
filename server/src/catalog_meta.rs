@@ -144,6 +144,9 @@ pub struct CatalogMeta {
     // ── Launch ────────────────────────────────────────────────────────────────
     /// Relative path inside the package root (from manifest), e.g. `game.exe` or `rom.sfc`.
     pub launch_target: Option<String>,
+    /// Extra launch targets for multi-executable games; the user picks one at launch.
+    #[serde(default)]
+    pub launch_targets: Vec<String>,
 
     // ── Media ─────────────────────────────────────────────────────────────────
     pub cover_image_url: Option<String>,
@@ -187,6 +190,7 @@ impl CatalogMeta {
             emulator_required: false,
             emulator_override: false,
             launch_target: None,
+            launch_targets: Vec::new(),
             cover_image_url: None,
             screenshot_urls: vec![],
             special_instructions: None,
